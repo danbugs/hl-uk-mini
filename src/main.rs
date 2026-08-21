@@ -51,23 +51,31 @@ fn main() -> hyperlight_host::Result<()> {
     }
 
     // Build the command line for the guest.
+    //
+    // elfloader with CUSTOMAPPNAME expects argv[1] to be the
+    // executable path on the VFS.  uk_libparam_parse strips
+    // everything before "--" as kernel parameters, so we pass
+    // the executable and its args as a flat list WITHOUT "--".
+    //
+    // Host CLI:  ... -- /usr/bin/python3 -c "print('hello')"
+    // Guest cmd: unikraft-hyperlight /usr/bin/python3 -c print('hello')
     let cmdline = {
         match app_args_start {
-            Some(pos) => {
+            Some(pos) if pos < args.len() => {
                 let mut parts = vec!["unikraft-hyperlight".to_string()];
-                parts.push("--".to_string());
                 parts.extend_from_slice(&args[pos..]);
                 parts.join(" ")
             }
-            None => "unikraft-hyperlight".to_string(),
+            _ => "unikraft-hyperlight".to_string(),
         }
     };
 
     // Scratch memory is shared between CoW page resolution, paging
-    // frame allocator, and host-mapped I/O buffers.  16 MiB gives
-    // ~12 MiB for the frame allocator (75% dynamic default) plus
-    // headroom for CoW faults and boot overhead.
-    let scratch_size: usize = 0x1000000; // 16 MiB
+    // frame allocator, and host-mapped I/O buffers.  The frame
+    // allocator gets 75% of this budget; the rest is for CoW faults
+    // and boot overhead.  Python's rootfs cpio extracts ~68 MiB into
+    // ramfs via demand paging, so we need plenty of scratch.
+    let scratch_size: usize = 0x10000000; // 256 MiB
     let mut cfg = SandboxConfiguration::default();
     cfg.set_scratch_size(scratch_size);
     // TODO: The PEB heap is only used for the boot stack (allocated before
