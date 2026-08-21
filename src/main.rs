@@ -3,31 +3,60 @@
 /// The guest boots, calls host functions for configuration (e.g.
 /// GetCmdLine to fetch the command line), then halts (port 108).
 use std::env;
+use std::path::PathBuf;
 
 use hyperlight_host::{
     GuestBinary, MultiUseSandbox, UninitializedSandbox,
     sandbox::SandboxConfiguration,
 };
 
+/// GPA where the initrd is mapped via map_file_cow.
+/// Past the x86 LAPIC MMIO page (0xFEE0_0000) to avoid collisions
+/// with KVM's in-kernel IRQCHIP reservation.
+const INITRD_MAP_BASE: u64 = 0xFEF0_0000;
+
 fn main() -> hyperlight_host::Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: hyperlight-unikraft-mini <guest-elf> [-- args...]");
+        eprintln!("Usage: hyperlight-unikraft-mini <guest-elf> [--initrd <cpio>] [-- args...]");
         std::process::exit(1);
     }
 
     let guest_path = &args[1];
 
+    // Parse --initrd and -- separator
+    let mut initrd_path: Option<PathBuf> = None;
+    let mut app_args_start: Option<usize> = None;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--initrd" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("--initrd requires a path argument");
+                    std::process::exit(1);
+                }
+                initrd_path = Some(PathBuf::from(&args[i]));
+            }
+            "--" => {
+                app_args_start = Some(i + 1);
+                break;
+            }
+            _ => {
+                eprintln!("Unknown argument: {}", args[i]);
+                std::process::exit(1);
+            }
+        }
+        i += 1;
+    }
+
     // Build the command line for the guest.
-    // Format: "unikraft-hyperlight [-- user-args...]"
-    // If "--" is present, everything after it is forwarded as app args.
     let cmdline = {
-        let sep_pos = args.iter().position(|a| a == "--");
-        match sep_pos {
+        match app_args_start {
             Some(pos) => {
                 let mut parts = vec!["unikraft-hyperlight".to_string()];
                 parts.push("--".to_string());
-                parts.extend_from_slice(&args[pos + 1..]);
+                parts.extend_from_slice(&args[pos..]);
                 parts.join(" ")
             }
             None => "unikraft-hyperlight".to_string(),
@@ -49,6 +78,17 @@ fn main() -> hyperlight_host::Result<()> {
     let mut usandbox =
         UninitializedSandbox::new(GuestBinary::FilePath(guest_path.clone()), Some(cfg))?;
 
+    // Map initrd via zero-copy CoW if provided.
+    // The host decides the GPA and tells the guest via GetInitrdBase/GetInitrdSize.
+    let (initrd_base, initrd_size): (u64, u64) = if let Some(ref path) = initrd_path {
+        let size = usandbox.map_file_cow(path, INITRD_MAP_BASE)?;
+        eprintln!("[host] initrd: {} ({} bytes) mapped at GPA {:#x}",
+                  path.display(), size, INITRD_MAP_BASE);
+        (INITRD_MAP_BASE, size)
+    } else {
+        (0, 0)
+    };
+
     // Register host functions that the guest can call during boot.
 
     // GetCmdLine() -> String: returns the command line for Unikraft.
@@ -63,6 +103,16 @@ fn main() -> hyperlight_host::Result<()> {
     let paging_budget = (scratch_size as u64) * 3 / 4;
     usandbox.register("GetPagingBudget", move || -> hyperlight_host::Result<u64> {
         Ok(paging_budget)
+    })?;
+
+    // GetInitrdBase() -> u64: GPA where the initrd was mapped (0 = none).
+    usandbox.register("GetInitrdBase", move || -> hyperlight_host::Result<u64> {
+        Ok(initrd_base)
+    })?;
+
+    // GetInitrdSize() -> u64: size of the mapped initrd (0 = none).
+    usandbox.register("GetInitrdSize", move || -> hyperlight_host::Result<u64> {
+        Ok(initrd_size)
     })?;
 
     eprintln!("[host] cmdline: {cmdline}");
