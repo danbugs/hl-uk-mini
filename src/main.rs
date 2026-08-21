@@ -34,14 +34,17 @@ fn main() -> hyperlight_host::Result<()> {
         }
     };
 
-    // Unikraft's native PAL allocates IST exception stacks in BSS
-    // (CoW pages).  Each CoW page resolution consumes one scratch
-    // page, and the default scratch size (0x48000 = 72 pages) isn't
-    // enough.  Bump to 1 MiB to accommodate the ~50 IST pages plus
-    // page tables and other BSS CoW faults.
+    // Scratch memory is shared between CoW page resolution, paging
+    // frame allocator, and host-mapped I/O buffers.  16 MiB gives
+    // ~12 MiB for the frame allocator (75% dynamic default) plus
+    // headroom for CoW faults and boot overhead.
+    let scratch_size: usize = 0x1000000; // 16 MiB
     let mut cfg = SandboxConfiguration::default();
-    cfg.set_scratch_size(0x100000); // 1 MiB
-    cfg.set_heap_size(0x100000); // 1 MiB (default 128K too small for Unikraft stacks)
+    cfg.set_scratch_size(scratch_size);
+    // TODO: The PEB heap is only used for the boot stack (allocated before
+    // ukplat_mem_init).  Once the guest allocates the boot stack from scratch
+    // instead, heap_size can be dropped to 0 and the PEB heap removed entirely.
+    cfg.set_heap_size(0x100000); // 1 MiB (only needed for boot stack pre-paging init)
 
     let mut usandbox =
         UninitializedSandbox::new(GuestBinary::FilePath(guest_path.clone()), Some(cfg))?;
@@ -52,6 +55,14 @@ fn main() -> hyperlight_host::Result<()> {
     let cmdline_clone = cmdline.clone();
     usandbox.register("GetCmdLine", move || -> hyperlight_host::Result<String> {
         Ok(cmdline_clone.clone())
+    })?;
+
+    // GetPagingBudget() -> u64: tells the guest how many bytes of
+    // scratch to give the paging frame allocator.  Give 75% of
+    // scratch — the remaining 25% is for CoW faults + boot overhead.
+    let paging_budget = (scratch_size as u64) * 3 / 4;
+    usandbox.register("GetPagingBudget", move || -> hyperlight_host::Result<u64> {
+        Ok(paging_budget)
     })?;
 
     eprintln!("[host] cmdline: {cmdline}");
