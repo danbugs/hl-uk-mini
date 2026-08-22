@@ -4,4 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
+hyperlight-common = "0.16.0"
 hyperlight-host = "0.16.0"
