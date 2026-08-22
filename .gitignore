@@ -1,3 +1,4 @@
 /target
 build/
 build-elfloader/
+snapshots/drivers/python/hl_pydriver
