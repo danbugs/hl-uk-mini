@@ -19,10 +19,11 @@ use host_functions::GuestConfig;
 /// with KVM's in-kernel IRQCHIP reservation.
 const INITRD_MAP_BASE: u64 = 0xFEF0_0000;
 
-/// Scratch memory budget.  The frame allocator gets 75% of this;
-/// the rest covers CoW faults and boot overhead.  Python's rootfs
-/// cpio extracts ~68 MiB into ramfs via demand paging.
-const SCRATCH_SIZE: usize = 0x1000_0000; // 256 MiB
+/// Default scratch memory budget.  The frame allocator gets 75% of
+/// this; the rest covers CoW faults and boot overhead.  Override
+/// with --scratch-mb for large rootfs images (e.g. Node's 100 MiB
+/// binary needs ~512 MiB).
+const DEFAULT_SCRATCH_MB: usize = 256;
 
 /// PEB heap size.  Only needed for the boot stack (allocated before
 /// ukplat_mem_init).  Can be dropped to 0 once the guest allocates
@@ -66,6 +67,9 @@ struct RunArgs {
     /// Path to the guest ELF binary.
     guest_elf: PathBuf,
 
+    /// Script file (.py, .js, …) to execute in the guest.
+    script: Option<PathBuf>,
+
     /// Path to a CPIO initrd to map into the guest.
     #[arg(long)]
     initrd: Option<PathBuf>,
@@ -75,7 +79,12 @@ struct RunArgs {
     #[arg(long)]
     entry: Option<String>,
 
-    /// Code to dispatch to the guest runtime (repeatable).
+    /// Scratch memory in MiB (default 256; increase for large rootfs).
+    #[arg(long, default_value_t = DEFAULT_SCRATCH_MB)]
+    scratch_mb: usize,
+
+    /// Inline code to dispatch (repeatable).  If a script file is
+    /// also given, --exec runs after the script.
     #[arg(long)]
     exec: Vec<String>,
 }
@@ -95,6 +104,10 @@ struct SaveArgs {
     #[arg(long)]
     entry: Option<String>,
 
+    /// Scratch memory in MiB (default 256; increase for large rootfs).
+    #[arg(long, default_value_t = DEFAULT_SCRATCH_MB)]
+    scratch_mb: usize,
+
     /// Directory to save the snapshot (OCI Image Layout).
     #[arg(short, long)]
     output: PathBuf,
@@ -106,7 +119,11 @@ struct ExecArgs {
     /// Path to a saved snapshot directory (OCI Image Layout).
     snapshot: PathBuf,
 
-    /// Code to dispatch to the guest runtime (repeatable).
+    /// Script file (.py, .js, …) to execute in the guest.
+    script: Option<PathBuf>,
+
+    /// Inline code to dispatch (repeatable).  If a script file is
+    /// also given, --exec runs after the script.
     #[arg(long)]
     exec: Vec<String>,
 }
@@ -195,9 +212,11 @@ fn create_sandbox(
     guest_elf: &PathBuf,
     initrd: &Option<PathBuf>,
     entry: &Option<String>,
+    scratch_mb: usize,
 ) -> hyperlight_host::Result<(UninitializedSandbox, GuestConfig)> {
+    let scratch_size = scratch_mb * 1024 * 1024;
     let mut cfg = SandboxConfiguration::default();
-    cfg.set_scratch_size(SCRATCH_SIZE);
+    cfg.set_scratch_size(scratch_size);
     cfg.set_heap_size(HEAP_SIZE);
 
     let mut usandbox = UninitializedSandbox::new(
@@ -219,7 +238,7 @@ fn create_sandbox(
     let entry = resolve_entry(entry, initrd);
     let config = GuestConfig {
         cmdline: build_cmdline(&entry),
-        scratch_size: SCRATCH_SIZE,
+        scratch_size,
         initrd_base,
         initrd_size,
     };
@@ -238,17 +257,41 @@ fn evolve(usandbox: UninitializedSandbox) -> hyperlight_host::Result<MultiUseSan
     Ok(sandbox)
 }
 
+/// Build the list of code strings to dispatch: script file first
+/// (read into a string), then any --exec inline snippets.
+fn resolve_exec(script: &Option<PathBuf>, exec: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(path) = script {
+        match std::fs::read_to_string(path) {
+            Ok(code) => out.push(code),
+            Err(e) => {
+                eprintln!("[host] error reading {}: {e}", path.display());
+                std::process::exit(1);
+            }
+        }
+    }
+    out.extend(exec.iter().cloned());
+    out
+}
+
 /// Dispatch exec commands on a sandbox and print timing.
 fn dispatch(
     sandbox: &mut MultiUseSandbox,
+    script: &Option<PathBuf>,
     exec: &[String],
     label: &str,
 ) -> hyperlight_host::Result<()> {
-    for (i, code) in exec.iter().enumerate() {
+    let items = resolve_exec(script, exec);
+    for (i, code) in items.iter().enumerate() {
+        let summary = if script.is_some() && i == 0 {
+            format!("{}", script.as_ref().unwrap().display())
+        } else {
+            code.chars().take(60).collect()
+        };
         let t = Instant::now();
         sandbox.call::<()>("Exec", code.clone())?;
         eprintln!(
-            "[host] exec[{i}]{label}: {:.1}ms ({code})",
+            "[host] exec[{i}]{label}: {:.1}ms ({summary})",
             t.elapsed().as_secs_f64() * 1000.0,
         );
     }
@@ -258,14 +301,14 @@ fn dispatch(
 // ── Commands ─────────────────────────────────────────────────────
 
 fn cmd_run(args: RunArgs) -> hyperlight_host::Result<()> {
-    let (usandbox, _config) = create_sandbox(&args.guest_elf, &args.initrd, &args.entry)?;
+    let (usandbox, _config) = create_sandbox(&args.guest_elf, &args.initrd, &args.entry, args.scratch_mb)?;
     let mut sandbox = evolve(usandbox)?;
-    dispatch(&mut sandbox, &args.exec, "")?;
+    dispatch(&mut sandbox, &args.script, &args.exec, "")?;
     Ok(())
 }
 
 fn cmd_snapshot_save(args: SaveArgs) -> hyperlight_host::Result<()> {
-    let (usandbox, _config) = create_sandbox(&args.guest_elf, &args.initrd, &args.entry)?;
+    let (usandbox, _config) = create_sandbox(&args.guest_elf, &args.initrd, &args.entry, args.scratch_mb)?;
     let mut sandbox = evolve(usandbox)?;
 
     let t = Instant::now();
@@ -305,7 +348,7 @@ fn cmd_snapshot_exec(args: ExecArgs) -> hyperlight_host::Result<()> {
     // so safe defaults suffice here.
     let config = GuestConfig {
         cmdline: String::new(),
-        scratch_size: SCRATCH_SIZE,
+        scratch_size: DEFAULT_SCRATCH_MB * 1024 * 1024,
         initrd_base: 0,
         initrd_size: 0,
     };
@@ -318,7 +361,7 @@ fn cmd_snapshot_exec(args: ExecArgs) -> hyperlight_host::Result<()> {
         t.elapsed().as_secs_f64() * 1000.0,
     );
 
-    dispatch(&mut sandbox, &args.exec, " (from snapshot)")?;
+    dispatch(&mut sandbox, &args.script, &args.exec, " (from snapshot)")?;
     Ok(())
 }
 
