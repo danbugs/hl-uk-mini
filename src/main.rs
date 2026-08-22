@@ -1,134 +1,337 @@
-/// Minimal Hyperlight host for booting a Unikraft unikernel.
-///
-/// The guest boots, calls host functions for configuration (e.g.
-/// GetCmdLine to fetch the command line), then halts (port 108).
-use std::env;
-use std::path::PathBuf;
+mod host_functions;
 
+use std::fs::File;
+use std::io::{Read as _, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Instant;
+
+use clap::{Parser, Subcommand};
 use hyperlight_host::{
     GuestBinary, MultiUseSandbox, UninitializedSandbox,
-    sandbox::SandboxConfiguration,
+    sandbox::{SandboxConfiguration, snapshot::{OciTag, Snapshot}},
 };
+
+use host_functions::GuestConfig;
 
 /// GPA where the initrd is mapped via map_file_cow.
 /// Past the x86 LAPIC MMIO page (0xFEE0_0000) to avoid collisions
 /// with KVM's in-kernel IRQCHIP reservation.
 const INITRD_MAP_BASE: u64 = 0xFEF0_0000;
 
-fn main() -> hyperlight_host::Result<()> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: hyperlight-unikraft-mini <guest-elf> [--initrd <cpio>] [-- args...]");
-        std::process::exit(1);
+/// Scratch memory budget.  The frame allocator gets 75% of this;
+/// the rest covers CoW faults and boot overhead.  Python's rootfs
+/// cpio extracts ~68 MiB into ramfs via demand paging.
+const SCRATCH_SIZE: usize = 0x1000_0000; // 256 MiB
+
+/// PEB heap size.  Only needed for the boot stack (allocated before
+/// ukplat_mem_init).  Can be dropped to 0 once the guest allocates
+/// the boot stack from scratch instead.
+const HEAP_SIZE: u64 = 0x10_0000; // 1 MiB
+
+/// OCI tag used when saving/loading snapshots to disk.
+const SNAPSHOT_TAG: &str = "latest";
+
+/// Minimal Hyperlight host for Unikraft unikernels.
+#[derive(Parser)]
+#[command(name = "hl-uk-mini")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Boot a Unikraft guest and dispatch exec commands.
+    Run(RunArgs),
+
+    /// Snapshot operations: save a post-evolve snapshot to disk,
+    /// or restore from a saved snapshot and dispatch.
+    #[command(subcommand)]
+    Snapshot(SnapshotCommand),
+}
+
+#[derive(Subcommand)]
+enum SnapshotCommand {
+    /// Boot the guest, then save a snapshot to disk.
+    Save(SaveArgs),
+
+    /// Restore a guest from a saved snapshot and dispatch exec commands.
+    Exec(ExecArgs),
+}
+
+/// Arguments shared by commands that boot from an ELF binary.
+#[derive(clap::Args)]
+struct RunArgs {
+    /// Path to the guest ELF binary.
+    guest_elf: PathBuf,
+
+    /// Path to a CPIO initrd to map into the guest.
+    #[arg(long)]
+    initrd: Option<PathBuf>,
+
+    /// Entry point binary path inside the initrd VFS.
+    /// Auto-detected from the initrd if not specified.
+    #[arg(long)]
+    entry: Option<String>,
+
+    /// Code to dispatch to the guest runtime (repeatable).
+    #[arg(long)]
+    exec: Vec<String>,
+}
+
+/// Arguments for `snapshot save`.
+#[derive(clap::Args)]
+struct SaveArgs {
+    /// Path to the guest ELF binary.
+    guest_elf: PathBuf,
+
+    /// Path to a CPIO initrd to map into the guest.
+    #[arg(long)]
+    initrd: Option<PathBuf>,
+
+    /// Entry point binary path inside the initrd VFS.
+    /// Auto-detected from the initrd if not specified.
+    #[arg(long)]
+    entry: Option<String>,
+
+    /// Directory to save the snapshot (OCI Image Layout).
+    #[arg(short, long)]
+    output: PathBuf,
+}
+
+/// Arguments for `snapshot exec`.
+#[derive(clap::Args)]
+struct ExecArgs {
+    /// Path to a saved snapshot directory (OCI Image Layout).
+    snapshot: PathBuf,
+
+    /// Code to dispatch to the guest runtime (repeatable).
+    #[arg(long)]
+    exec: Vec<String>,
+}
+
+// ── CPIO entry-point auto-detection ─────────────────────────────
+
+/// Scan a newc-format CPIO archive for a Hyperlight driver binary.
+///
+/// Looks for files matching `usr/local/bin/hl_*` or `usr/bin/hl_*`
+/// and returns the first match as a VFS-absolute path (e.g.
+/// `/usr/local/bin/hl_pydriver`).
+fn find_cpio_entry(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    let mut header = [0u8; 110];
+
+    loop {
+        if file.read_exact(&mut header).is_err() {
+            break;
+        }
+
+        let magic = std::str::from_utf8(&header[0..6]).ok()?;
+        if magic != "070701" && magic != "070702" {
+            break;
+        }
+
+        let namesize =
+            u32::from_str_radix(std::str::from_utf8(&header[94..102]).ok()?, 16).ok()?;
+        let filesize =
+            u64::from_str_radix(std::str::from_utf8(&header[54..62]).ok()?, 16).ok()?;
+
+        let mut name_buf = vec![0u8; namesize as usize];
+        file.read_exact(&mut name_buf).ok()?;
+        let name = std::str::from_utf8(&name_buf)
+            .ok()?
+            .trim_end_matches('\0');
+
+        if name == "TRAILER!!!" {
+            break;
+        }
+
+        // Pad past filename to 4-byte boundary
+        let name_padding = (4 - ((110 + namesize) % 4)) % 4;
+        file.seek(SeekFrom::Current(name_padding as i64)).ok()?;
+
+        // Check for a Hyperlight driver binary
+        if name.starts_with("usr/local/bin/hl_") || name.starts_with("usr/bin/hl_") {
+            return Some(format!("/{name}"));
+        }
+
+        // Skip file data + padding to 4-byte boundary
+        let data_padding = (4 - (filesize % 4)) % 4;
+        file.seek(SeekFrom::Current((filesize + data_padding) as i64))
+            .ok()?;
     }
 
-    let guest_path = &args[1];
+    None
+}
 
-    // Parse --initrd and -- separator
-    let mut initrd_path: Option<PathBuf> = None;
-    let mut app_args_start: Option<usize> = None;
-    let mut i = 2;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--initrd" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("--initrd requires a path argument");
-                    std::process::exit(1);
-                }
-                initrd_path = Some(PathBuf::from(&args[i]));
-            }
-            "--" => {
-                app_args_start = Some(i + 1);
-                break;
-            }
-            _ => {
-                eprintln!("Unknown argument: {}", args[i]);
-                std::process::exit(1);
-            }
-        }
-        i += 1;
+/// Resolve the entry point: explicit --entry, auto-detected from
+/// the initrd, or None (kernel boots without loading an app).
+fn resolve_entry(entry: &Option<String>, initrd: &Option<PathBuf>) -> Option<String> {
+    if let Some(e) = entry {
+        return Some(e.clone());
     }
-
-    // Build the command line for the guest.
-    //
-    // elfloader with CUSTOMAPPNAME expects argv[1] to be the
-    // executable path on the VFS.  uk_libparam_parse strips
-    // everything before "--" as kernel parameters, so we pass
-    // the executable and its args as a flat list WITHOUT "--".
-    //
-    // Host CLI:  ... -- /usr/bin/python3 -c "print('hello')"
-    // Guest cmd: unikraft-hyperlight /usr/bin/python3 -c print('hello')
-    let cmdline = {
-        match app_args_start {
-            Some(pos) if pos < args.len() => {
-                let mut parts = vec!["unikraft-hyperlight".to_string()];
-                parts.extend_from_slice(&args[pos..]);
-                parts.join(" ")
-            }
-            _ => "unikraft-hyperlight".to_string(),
+    if let Some(path) = initrd {
+        if let Some(detected) = find_cpio_entry(path) {
+            eprintln!("[host] auto-detected entry: {detected}");
+            return Some(detected);
         }
-    };
+    }
+    None
+}
 
-    // Scratch memory is shared between CoW page resolution, paging
-    // frame allocator, and host-mapped I/O buffers.  The frame
-    // allocator gets 75% of this budget; the rest is for CoW faults
-    // and boot overhead.  Python's rootfs cpio extracts ~68 MiB into
-    // ramfs via demand paging, so we need plenty of scratch.
-    let scratch_size: usize = 0x10000000; // 256 MiB
+// ── Helpers ──────────────────────────────────────────────────────
+
+/// Build the guest command line from the entry point.
+fn build_cmdline(entry: &Option<String>) -> String {
+    match entry {
+        Some(e) => format!("unikraft-hyperlight {e}"),
+        None => "unikraft-hyperlight".to_string(),
+    }
+}
+
+/// Create an uninitialized sandbox with host functions registered.
+fn create_sandbox(
+    guest_elf: &PathBuf,
+    initrd: &Option<PathBuf>,
+    entry: &Option<String>,
+) -> hyperlight_host::Result<(UninitializedSandbox, GuestConfig)> {
     let mut cfg = SandboxConfiguration::default();
-    cfg.set_scratch_size(scratch_size);
-    // TODO: The PEB heap is only used for the boot stack (allocated before
-    // ukplat_mem_init).  Once the guest allocates the boot stack from scratch
-    // instead, heap_size can be dropped to 0 and the PEB heap removed entirely.
-    cfg.set_heap_size(0x100000); // 1 MiB (only needed for boot stack pre-paging init)
+    cfg.set_scratch_size(SCRATCH_SIZE);
+    cfg.set_heap_size(HEAP_SIZE);
 
-    let mut usandbox =
-        UninitializedSandbox::new(GuestBinary::FilePath(guest_path.clone()), Some(cfg))?;
+    let mut usandbox = UninitializedSandbox::new(
+        GuestBinary::FilePath(guest_elf.display().to_string()),
+        Some(cfg),
+    )?;
 
-    // Map initrd via zero-copy CoW if provided.
-    // The host decides the GPA and tells the guest via GetInitrdBase/GetInitrdSize.
-    let (initrd_base, initrd_size): (u64, u64) = if let Some(ref path) = initrd_path {
+    let (initrd_base, initrd_size) = if let Some(path) = initrd {
         let size = usandbox.map_file_cow(path, INITRD_MAP_BASE)?;
-        eprintln!("[host] initrd: {} ({} bytes) mapped at GPA {:#x}",
-                  path.display(), size, INITRD_MAP_BASE);
+        eprintln!(
+            "[host] initrd: {} ({size} bytes) mapped at GPA {INITRD_MAP_BASE:#x}",
+            path.display(),
+        );
         (INITRD_MAP_BASE, size)
     } else {
         (0, 0)
     };
 
-    // Register host functions that the guest can call during boot.
+    let entry = resolve_entry(entry, initrd);
+    let config = GuestConfig {
+        cmdline: build_cmdline(&entry),
+        scratch_size: SCRATCH_SIZE,
+        initrd_base,
+        initrd_size,
+    };
 
-    // GetCmdLine() -> String: returns the command line for Unikraft.
-    let cmdline_clone = cmdline.clone();
-    usandbox.register("GetCmdLine", move || -> hyperlight_host::Result<String> {
-        Ok(cmdline_clone.clone())
-    })?;
+    config.register(&mut usandbox)?;
+    eprintln!("[host] cmdline: {}", config.cmdline);
 
-    // GetPagingBudget() -> u64: tells the guest how many bytes of
-    // scratch to give the paging frame allocator.  Give 75% of
-    // scratch — the remaining 25% is for CoW faults + boot overhead.
-    let paging_budget = (scratch_size as u64) * 3 / 4;
-    usandbox.register("GetPagingBudget", move || -> hyperlight_host::Result<u64> {
-        Ok(paging_budget)
-    })?;
+    Ok((usandbox, config))
+}
 
-    // GetInitrdBase() -> u64: GPA where the initrd was mapped (0 = none).
-    usandbox.register("GetInitrdBase", move || -> hyperlight_host::Result<u64> {
-        Ok(initrd_base)
-    })?;
+/// Evolve a sandbox and print timing.
+fn evolve(usandbox: UninitializedSandbox) -> hyperlight_host::Result<MultiUseSandbox> {
+    let t = Instant::now();
+    let sandbox = usandbox.evolve()?;
+    eprintln!("[host] evolve: {:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+    Ok(sandbox)
+}
 
-    // GetInitrdSize() -> u64: size of the mapped initrd (0 = none).
-    usandbox.register("GetInitrdSize", move || -> hyperlight_host::Result<u64> {
-        Ok(initrd_size)
-    })?;
+/// Dispatch exec commands on a sandbox and print timing.
+fn dispatch(
+    sandbox: &mut MultiUseSandbox,
+    exec: &[String],
+    label: &str,
+) -> hyperlight_host::Result<()> {
+    for (i, code) in exec.iter().enumerate() {
+        let t = Instant::now();
+        sandbox.call::<()>("Exec", code.clone())?;
+        eprintln!(
+            "[host] exec[{i}]{label}: {:.1}ms ({code})",
+            t.elapsed().as_secs_f64() * 1000.0,
+        );
+    }
+    Ok(())
+}
 
-    eprintln!("[host] cmdline: {cmdline}");
+// ── Commands ─────────────────────────────────────────────────────
 
-    // evolve() creates the VM and runs the guest to completion.
-    // During evolve, the guest can call registered host functions
-    // (e.g. GetCmdLine).  DebugPrint output goes to stderr.
-    let _sandbox: MultiUseSandbox = usandbox.evolve()?;
+fn cmd_run(args: RunArgs) -> hyperlight_host::Result<()> {
+    let (usandbox, _config) = create_sandbox(&args.guest_elf, &args.initrd, &args.entry)?;
+    let mut sandbox = evolve(usandbox)?;
+    dispatch(&mut sandbox, &args.exec, "")?;
+    Ok(())
+}
+
+fn cmd_snapshot_save(args: SaveArgs) -> hyperlight_host::Result<()> {
+    let (usandbox, _config) = create_sandbox(&args.guest_elf, &args.initrd, &args.entry)?;
+    let mut sandbox = evolve(usandbox)?;
+
+    let t = Instant::now();
+    let snap = sandbox.snapshot()?;
+    eprintln!(
+        "[host] snapshot: {:.1}ms",
+        t.elapsed().as_secs_f64() * 1000.0,
+    );
+
+    let tag: OciTag = SNAPSHOT_TAG.parse().expect("valid OCI tag");
+
+    let t = Instant::now();
+    let digest = snap.save(&args.output, &tag)?;
+    eprintln!(
+        "[host] saved: {} ({digest}) in {:.1}ms",
+        args.output.display(),
+        t.elapsed().as_secs_f64() * 1000.0,
+    );
 
     Ok(())
+}
+
+fn cmd_snapshot_exec(args: ExecArgs) -> hyperlight_host::Result<()> {
+    let tag: OciTag = SNAPSHOT_TAG.parse().expect("valid OCI tag");
+
+    let t = Instant::now();
+    let snap: Arc<Snapshot> = Arc::new(Snapshot::load(&args.snapshot, tag)?);
+    eprintln!(
+        "[host] loaded snapshot: {} in {:.1}ms",
+        args.snapshot.display(),
+        t.elapsed().as_secs_f64() * 1000.0,
+    );
+
+    // Build host functions.  The snapshot validates that we provide
+    // a superset of what was registered at save time.  The guest
+    // already has the real values baked into its memory from evolve,
+    // so safe defaults suffice here.
+    let config = GuestConfig {
+        cmdline: String::new(),
+        scratch_size: SCRATCH_SIZE,
+        initrd_base: 0,
+        initrd_size: 0,
+    };
+    let hf = config.host_functions()?;
+
+    let t = Instant::now();
+    let mut sandbox = MultiUseSandbox::from_snapshot(snap, hf, None)?;
+    eprintln!(
+        "[host] from_snapshot: {:.1}ms",
+        t.elapsed().as_secs_f64() * 1000.0,
+    );
+
+    dispatch(&mut sandbox, &args.exec, " (from snapshot)")?;
+    Ok(())
+}
+
+// ── Main ─────────────────────────────────────────────────────────
+
+fn main() -> hyperlight_host::Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Command::Run(args) => cmd_run(args),
+        Command::Snapshot(cmd) => match cmd {
+            SnapshotCommand::Save(args) => cmd_snapshot_save(args),
+            SnapshotCommand::Exec(args) => cmd_snapshot_exec(args),
+        },
+    }
 }
