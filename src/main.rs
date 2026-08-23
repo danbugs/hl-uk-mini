@@ -14,6 +14,9 @@ use hyperlight_host::{
 
 use host_functions::GuestConfig;
 
+/// Embedded Unikraft app-elfloader kernel (plat-hyperlight-cleanup).
+static KERNEL: &[u8] = include_bytes!("../kernel/elfloader_hyperlight-x86_64");
+
 /// GPA where the initrd is mapped via map_file_cow.
 /// Past the x86 LAPIC MMIO page (0xFEE0_0000) to avoid collisions
 /// with KVM's in-kernel IRQCHIP reservation.
@@ -61,12 +64,9 @@ enum SnapshotCommand {
     Exec(ExecArgs),
 }
 
-/// Arguments shared by commands that boot from an ELF binary.
+/// Arguments for `run` — boot the embedded kernel + initrd and dispatch.
 #[derive(clap::Args)]
 struct RunArgs {
-    /// Path to the guest ELF binary.
-    guest_elf: PathBuf,
-
     /// Script file (.py, .js, …) to execute in the guest.
     script: Option<PathBuf>,
 
@@ -92,9 +92,6 @@ struct RunArgs {
 /// Arguments for `snapshot save`.
 #[derive(clap::Args)]
 struct SaveArgs {
-    /// Path to the guest ELF binary.
-    guest_elf: PathBuf,
-
     /// Path to a CPIO initrd to map into the guest.
     #[arg(long)]
     initrd: Option<PathBuf>,
@@ -208,8 +205,8 @@ fn build_cmdline(entry: &Option<String>) -> String {
 }
 
 /// Create an uninitialized sandbox with host functions registered.
+/// Uses the embedded kernel binary (KERNEL).
 fn create_sandbox(
-    guest_elf: &PathBuf,
     initrd: &Option<PathBuf>,
     entry: &Option<String>,
     scratch_mb: usize,
@@ -220,7 +217,7 @@ fn create_sandbox(
     cfg.set_heap_size(HEAP_SIZE);
 
     let mut usandbox = UninitializedSandbox::new(
-        GuestBinary::FilePath(guest_elf.display().to_string()),
+        GuestBinary::Buffer(KERNEL),
         Some(cfg),
     )?;
 
@@ -301,14 +298,14 @@ fn dispatch(
 // ── Commands ─────────────────────────────────────────────────────
 
 fn cmd_run(args: RunArgs) -> hyperlight_host::Result<()> {
-    let (usandbox, _config) = create_sandbox(&args.guest_elf, &args.initrd, &args.entry, args.scratch_mb)?;
+    let (usandbox, _config) = create_sandbox(&args.initrd, &args.entry, args.scratch_mb)?;
     let mut sandbox = evolve(usandbox)?;
     dispatch(&mut sandbox, &args.script, &args.exec, "")?;
     Ok(())
 }
 
 fn cmd_snapshot_save(args: SaveArgs) -> hyperlight_host::Result<()> {
-    let (usandbox, _config) = create_sandbox(&args.guest_elf, &args.initrd, &args.entry, args.scratch_mb)?;
+    let (usandbox, _config) = create_sandbox(&args.initrd, &args.entry, args.scratch_mb)?;
     let mut sandbox = evolve(usandbox)?;
 
     let t = Instant::now();
