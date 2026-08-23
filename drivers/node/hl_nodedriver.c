@@ -1,33 +1,45 @@
 /*
  * hl_nodedriver — Node.js runtime driver for Hyperlight.
  *
- * Loaded by app-elfloader during boot (evolve).  Registers a
- * dispatch callback that runs Node.js code via vfork+exec on
- * each call.
+ * Spawns a persistent Node.js child process during boot via
+ * vfork+exec.  The child runs a dispatch loop that reads code
+ * from a pipe, evals it, and writes an ack byte back.
  *
  * Flow:
  *   boot (evolve):
- *     main() → parse env vars for kernel addresses
- *            → *callback_slot = node_dispatch
- *            → outl port 108 (halt VM, RAX = dispatch entry)
+ *     main() → create pipes
+ *            → write bootstrap JS to /tmp/hl_bootstrap.js
+ *            → vfork + exec("node", "/tmp/hl_bootstrap.js")
+ *            → read "ready" ack from child (blocks, scheduler
+ *              switches to child, V8 starts up, child signals)
+ *            → register dispatch callback, halt
  *
  *   host: call("Exec", "console.log(42)")
  *     dispatch → hyperlight_dispatch_function (kernel)
  *              → node_dispatch(fc, fc_len)
- *              → write code to /tmp/hl_dispatch.js
- *              → vfork + execl("node", "/tmp/hl_dispatch.js")
- *              → waitpid → halt
+ *              → write [len:u64][code] to pipe
+ *              → read ack byte (blocks, scheduler switches to
+ *                child, child evals code, writes ack)
+ *              → halt
  *
- * Each dispatch pays full V8 startup cost (~50-100ms).  A future
- * optimization would keep a persistent Node child process.
+ * The child Node process stays alive across dispatches — no V8
+ * startup cost per call, and no exit/cleanup hang.
+ *
+ * TODO: The persistent child is a workaround for a vfork+exec hang
+ * where the child Node process can't exit cleanly.  The root cause
+ * is likely that hyperlight_dispatch_function doesn't restore the
+ * cooperative scheduler's state (current thread, run queues) on
+ * re-entry — the same class of bug we fixed for VFS, fd table,
+ * and SYSCALL MSRs.  Once scheduler state is properly restored on
+ * dispatch re-entry, a simpler per-dispatch vfork+exec+waitpid
+ * approach should work.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <signal.h>
-#include <sys/wait.h>
+#include <stdint.h>
 
 #include "../hl_fc.h"
 
@@ -35,6 +47,8 @@
 
 static hl_dispatch_fn_t *g_callback_slot;
 static uint64_t g_dispatch_entry;
+static int g_pipe_to_node;    /* parent writes code here */
+static int g_pipe_from_node;  /* parent reads ack here */
 
 /* ── Dispatch callback ─────────────────────────────────────────── */
 
@@ -46,56 +60,89 @@ static void node_dispatch(const uint8_t *fc, size_t fc_len)
 	if (!code)
 		return;
 
-	/* Build: "user_code\n; process.exit(0)" to force clean exit.
-	 * Node's event loop can hang during shutdown in this env. */
-	static const char suffix[] = "\n; process.exit(0)";
-	size_t total = code_len + sizeof(suffix); /* includes NUL */
-	char stack_buf[4096];
-	char *buf;
-	if (total <= sizeof(stack_buf)) {
-		buf = stack_buf;
-	} else {
-		buf = malloc(total);
-		if (!buf)
+	/* Send length (8 bytes LE) + code to the child */
+	uint64_t len64 = (uint64_t)code_len;
+	if (write(g_pipe_to_node, &len64, 8) != 8) {
+		fprintf(stderr, "hl_nodedriver: pipe write (len) failed\n");
+		fflush(stderr);
+		return;
+	}
+	const char *p = code;
+	size_t remaining = code_len;
+	while (remaining > 0) {
+		ssize_t n = write(g_pipe_to_node, p, remaining);
+		if (n <= 0) {
+			fprintf(stderr, "hl_nodedriver: pipe write (data) failed\n");
+			fflush(stderr);
 			return;
-	}
-	memcpy(buf, code, code_len);
-	memcpy(buf + code_len, suffix, sizeof(suffix));
-
-	pid_t pid = vfork();
-	if (pid == 0) {
-		execl("/usr/bin/node", "node", "-e", buf, NULL);
-		_exit(127);
-	}
-	if (pid > 0) {
-		/* Non-blocking wait with timeout — Node's exit can hang
-		 * in the unikernel due to exit_group/cleanup issues. */
-		int status = 0;
-		int tries = 0;
-		while (tries < 5000) {
-			int r = waitpid(pid, &status, WNOHANG);
-			if (r > 0)
-				break;
-			if (r < 0)
-				break;
-			/* Yield to the cooperative scheduler */
-			usleep(1000);
-			tries++;
 		}
-		if (tries >= 5000) {
-			/* Timed out — kill the child */
-			kill(pid, 9);
-			waitpid(pid, &status, 0);
-		}
-	} else {
-		fprintf(stderr, "hl_nodedriver: vfork failed\n");
+		p += n;
+		remaining -= n;
 	}
 
-	if (buf != stack_buf)
-		free(buf);
+	/* Wait for ack — child sends 0x00 after eval completes.
+	 * This read blocks and yields to the cooperative scheduler,
+	 * which switches to the child Node thread. */
+	char ack;
+	if (read(g_pipe_from_node, &ack, 1) != 1) {
+		fprintf(stderr, "hl_nodedriver: ack read failed\n");
+		fflush(stderr);
+	}
+}
 
-	fflush(stdout);
-	fflush(stderr);
+/* ── Bootstrap JS ─────────────────────────────────────────────── */
+
+static int write_bootstrap(int fd_in, int fd_out)
+{
+	const char *path = "/tmp/hl_bootstrap.js";
+	FILE *f = fopen(path, "w");
+	if (!f) {
+		fprintf(stderr, "hl_nodedriver: cannot create %s\n", path);
+		return -1;
+	}
+
+	fprintf(f,
+		"'use strict';\n"
+		"const fs = require('fs');\n"
+		"const fd_in = %d;\n"
+		"const fd_out = %d;\n"
+		"\n"
+		"// Expose CJS module globals so eval'd code can require()\n"
+		"globalThis.require = require;\n"
+		"globalThis.module = module;\n"
+		"globalThis.__dirname = __dirname;\n"
+		"globalThis.__filename = __filename;\n"
+		"\n"
+		"// Signal ready to parent\n"
+		"fs.writeSync(fd_out, Buffer.from([0]));\n"
+		"\n"
+		"// Dispatch loop — runs forever, one eval per iteration\n"
+		"const hdr = Buffer.alloc(8);\n"
+		"while (true) {\n"
+		"  let n = fs.readSync(fd_in, hdr, 0, 8);\n"
+		"  if (n < 8) break;\n"
+		"  let len = Number(hdr.readBigUInt64LE(0));\n"
+		"  let buf = Buffer.alloc(len);\n"
+		"  let off = 0;\n"
+		"  while (off < len) {\n"
+		"    n = fs.readSync(fd_in, buf, off, len - off);\n"
+		"    if (n <= 0) process.exit(1);\n"
+		"    off += n;\n"
+		"  }\n"
+		"  let code = buf.toString('utf8');\n"
+		"  try {\n"
+		"    let result = (0, eval)(code);\n"
+		"    if (result !== undefined) console.log(result);\n"
+		"  } catch (e) {\n"
+		"    console.error(e.stack || e);\n"
+		"  }\n"
+		"  // Ack — tells parent eval is done\n"
+		"  fs.writeSync(fd_out, Buffer.from([0]));\n"
+		"}\n",
+		fd_in, fd_out);
+
+	fclose(f);
+	return 0;
 }
 
 /* ── Entry point ───────────────────────────────────────────────── */
@@ -121,10 +168,54 @@ int main(int argc, char **argv, char **envp)
 		return 1;
 	}
 
+	/* Create pipes: parent→child (code) and child→parent (ack) */
+	int pipe_code[2];  /* [0]=read, [1]=write */
+	int pipe_ack[2];
+	if (pipe(pipe_code) < 0 || pipe(pipe_ack) < 0) {
+		fprintf(stderr, "hl_nodedriver: pipe() failed\n");
+		return 1;
+	}
+
+	/* Write bootstrap JS with the pipe fd numbers baked in */
+	if (write_bootstrap(pipe_code[0], pipe_ack[1]) < 0)
+		return 1;
+
+	/* Spawn persistent Node child.
+	 * vfork: parent blocks until child calls exec.
+	 * After exec, parent resumes.  Child inherits all fds. */
+	pid_t pid = vfork();
+	if (pid < 0) {
+		fprintf(stderr, "hl_nodedriver: vfork() failed\n");
+		return 1;
+	}
+	if (pid == 0) {
+		/* Child — only exec or _exit allowed after vfork */
+		execl("/usr/bin/node", "node", "/tmp/hl_bootstrap.js",
+		      (char *)NULL);
+		_exit(127);
+	}
+
+	/* Parent — close the child's pipe ends */
+	close(pipe_code[0]);
+	close(pipe_ack[1]);
+	g_pipe_to_node = pipe_code[1];
+	g_pipe_from_node = pipe_ack[0];
+
+	/* Wait for the child to signal ready.
+	 * This blocks, the scheduler switches to the child,
+	 * V8 starts up, the bootstrap writes the ready byte. */
+	fprintf(stderr, "hl_nodedriver: waiting for V8 startup...\n");
+	fflush(stderr);
+	char ready;
+	if (read(g_pipe_from_node, &ready, 1) != 1) {
+		fprintf(stderr, "hl_nodedriver: child failed to start\n");
+		return 1;
+	}
+
 	/* Register dispatch callback */
 	*g_callback_slot = node_dispatch;
 
-	fprintf(stderr, "hl_nodedriver: ready\n");
+	fprintf(stderr, "hl_nodedriver: ready (pid %d)\n", pid);
 	fflush(stderr);
 
 	/*

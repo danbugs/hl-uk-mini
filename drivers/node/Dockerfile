@@ -23,3 +23,6 @@ COPY --from=build /usr/local/bin/node /usr/bin/node
 
 # Hyperlight driver
 COPY --from=build /hl_nodedriver /usr/local/bin/hl_nodedriver
+
+# /tmp needed for bootstrap JS at runtime
+COPY --from=build /tmp /tmp
