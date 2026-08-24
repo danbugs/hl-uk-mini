@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-hyperlight-common = "0.16.0"
-hyperlight-host = "0.16.0"
+hyperlight-common = { git = "https://github.com/danbugs/hyperlight.git", branch = "danbugs/fix-restore-rss-v0.16" }
+hyperlight-host = { git = "https://github.com/danbugs/hyperlight.git", branch = "danbugs/fix-restore-rss-v0.16" }
