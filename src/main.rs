@@ -7,9 +7,8 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use hyperlight_unikraft::{
-    Exec, GuestConfig, HostFunctions, DEFAULT_SCRATCH_MB, SNAPSHOT_TAG,
-    create_sandbox, init, run,
-    hyperlight_host::MultiUseSandbox,
+    Exec, DEFAULT_SCRATCH_MB, SNAPSHOT_TAG,
+    create_sandbox, init, restore, run,
     OciTag, Snapshot,
 };
 
@@ -167,17 +166,8 @@ fn cmd_snapshot_exec(
         "snapshot loaded",
     );
 
-    let config = GuestConfig {
-        cmdline: String::new(),
-        scratch_size: DEFAULT_SCRATCH_MB * 1024 * 1024,
-        initrd_base: 0,
-        initrd_size: 0,
-    };
-    let mut hf = HostFunctions::default();
-    config.register(&mut hf)?;
-
     let t = Instant::now();
-    let mut sandbox = MultiUseSandbox::from_snapshot(snap, hf, None)?;
+    let mut sandbox = restore(snap)?;
     info!(
         elapsed_ms = t.elapsed().as_secs_f64() * 1000.0,
         "restored from snapshot",

@@ -280,9 +280,9 @@ pub fn init(usandbox: UninitializedSandbox) -> hyperlight_host::Result<MultiUseS
 /// What to execute in the guest.
 #[derive(Debug, Clone)]
 pub enum Exec {
-    /// Inline code string.
+    /// Inline code string — passed to the guest's dispatch callback.
     Code(String),
-    /// Path to a script file (read into a string before dispatch).
+    /// Script file — read to string and passed to the guest's dispatch callback.
     File(PathBuf),
 }
 
@@ -300,23 +300,43 @@ impl From<String> for Exec {
 
 /// Execute code or a script file in the guest.
 ///
-/// Dispatches to the guest's driver via the `Exec` function.
-/// Accepts inline code (`"print('hi')"`) or a file path
-/// (`Exec::File("hello.py".into())`).
+/// Dispatches to the guest's driver callback. Accepts inline code
+/// (`"print('hi')"`) or a file path (`Exec::File("hello.py".into())`).
 pub fn run(
     sandbox: &mut MultiUseSandbox,
     exec: impl Into<Exec>,
 ) -> hyperlight_host::Result<()> {
-    let code = match exec.into() {
-        Exec::Code(s) => s,
-        Exec::File(path) => std::fs::read_to_string(&path).map_err(|e| {
-            hyperlight_host::HyperlightError::Error(format!(
-                "failed to read {}: {e}",
-                path.display(),
-            ))
-        })?,
+    match exec.into() {
+        Exec::Code(s) => sandbox.call::<()>("Exec", s),
+        Exec::File(path) => {
+            let code = std::fs::read_to_string(&path).map_err(|e| {
+                hyperlight_host::HyperlightError::Error(format!(
+                    "failed to read {}: {e}",
+                    path.display(),
+                ))
+            })?;
+            sandbox.call::<()>("Exec", code)
+        }
+    }
+}
+
+/// Restore a sandbox from a saved snapshot.
+///
+/// Convenience wrapper: creates a default [`GuestConfig`] (snapshot
+/// already has the guest's cmdline/initrd), registers host functions,
+/// and builds a [`MultiUseSandbox`] from the snapshot.
+pub fn restore(
+    snapshot: std::sync::Arc<Snapshot>,
+) -> hyperlight_host::Result<MultiUseSandbox> {
+    let config = GuestConfig {
+        cmdline: String::new(),
+        scratch_size: DEFAULT_SCRATCH_MB * 1024 * 1024,
+        initrd_base: 0,
+        initrd_size: 0,
     };
-    sandbox.call::<()>("Exec", code)
+    let mut hf = HostFunctions::default();
+    config.register(&mut hf)?;
+    MultiUseSandbox::from_snapshot(snapshot, hf, None)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
