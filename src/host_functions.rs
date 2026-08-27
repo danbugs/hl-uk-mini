@@ -66,6 +66,16 @@ impl GuestConfig {
     pub fn host_functions(&self) -> hyperlight_host::Result<HostFunctions> {
         let mut hf = HostFunctions::default();
 
+        // Override the default green HostPrint — send guest output to
+        // stderr uncolored so it doesn't bleed ANSI into host output.
+        hf.register_host_function(
+            "HostPrint",
+            |msg: String| -> hyperlight_host::Result<i32> {
+                eprint!("{msg}");
+                Ok(msg.len() as i32)
+            },
+        )?;
+
         let cmdline = self.cmdline.clone();
         hf.register_host_function("GetCmdLine", move || -> hyperlight_host::Result<String> {
             Ok(cmdline.clone())

@@ -241,6 +241,15 @@ fn create_sandbox(
     };
 
     config.register(&mut usandbox)?;
+
+    // Override Hyperlight's default HostPrint (which wraps output in
+    // green ANSI on stdout) — send guest output to stderr uncolored
+    // so it doesn't bleed color into host diagnostics.
+    usandbox.register_print(|msg: String| -> hyperlight_host::Result<i32> {
+        eprint!("{msg}");
+        Ok(msg.len() as i32)
+    })?;
+
     eprintln!("[host] cmdline: {}", config.cmdline);
 
     Ok((usandbox, config))
