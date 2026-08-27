@@ -605,7 +605,7 @@ dependencies = [
 [[package]]
 name = "hyperlight-common"
 version = "0.16.0"
-source = "git+https://github.com/danbugs/hyperlight.git?branch=danbugs%2Ffix-restore-rss-v0.16#776debbd5a3332a13316755f0a2061b8a1e0350a"
+source = "git+https://github.com/hyperlight-dev/hyperlight.git?branch=hluk#2602113315826ec34e86dfe6d6d5a35b43c793a8"
 dependencies = [
  "anyhow",
  "bitflags 2.13.1",
@@ -624,7 +624,7 @@ dependencies = [
 [[package]]
 name = "hyperlight-host"
 version = "0.16.0"
-source = "git+https://github.com/danbugs/hyperlight.git?branch=danbugs%2Ffix-restore-rss-v0.16#776debbd5a3332a13316755f0a2061b8a1e0350a"
+source = "git+https://github.com/hyperlight-dev/hyperlight.git?branch=hluk#2602113315826ec34e86dfe6d6d5a35b43c793a8"
 dependencies = [
  "anyhow",
  "bitflags 2.13.1",

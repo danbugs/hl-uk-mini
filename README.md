@@ -1,46 +1,30 @@
-# hyperlight-unikraft-mini
+# hyperlight-unikraft (hluk)
 
-Minimal Hyperlight host that boots a [Unikraft](https://unikraft.org/) unikernel.
+[Hyperlight](https://github.com/hyperlight-dev/hyperlight) host for
+[Unikraft](https://unikraft.org/) unikernels.
 
-## Prerequisites
-
-- Rust toolchain (stable)
-- Unikraft source tree with the `plat-hyperlight-cleanup` branch checked out
-- A Unikraft application (e.g. the catalog `helloworld`)
-
-## Build the guest
-
-**1. Configure** — copy the defconfig into the build output directory and expand it:
+## Usage
 
 ```bash
-mkdir -p /home/$USER/repos/hyperlight-unikraft-mini/build
-cp /home/$USER/repos/hyperlight-unikraft-mini/defconfig \
-   /home/$USER/repos/hyperlight-unikraft-mini/build/.config
+# Build a Python rootfs and run a script
+just build-rootfs python
+just run python examples/python/hello.py
 
-make -C /home/$USER/repos/unikraft-project/unikraft \
-    A=/home/$USER/repos/unikraft-project/catalog/library/helloworld \
-    O=/home/$USER/repos/hyperlight-unikraft-mini/build \
-    olddefconfig
+# Or Node.js
+just build-rootfs node
+just run node examples/node/hello.js
+
+# Snapshots
+just snapshot-save python
+just run-snapshot .snapshots/python examples/python/hello.py
+
+# See all recipes
+just --list
 ```
 
-`A=` tells Unikraft where the application source is (`Makefile.uk` + `main.c`).
-`O=` is the build output directory.
+## Supported runtimes
 
-**2. Build:**
-
-```bash
-make -C /home/$USER/repos/unikraft-project/unikraft \
-    A=/home/$USER/repos/unikraft-project/catalog/library/helloworld \
-    O=/home/$USER/repos/hyperlight-unikraft-mini/build \
-    -j$(nproc)
-```
-
-The ELF binary lands at `build/helloworld_hyperlight-x86_64`.
-
-## Run
-
-```bash
-cargo run -- build/helloworld_hyperlight-x86_64
-```
-
-Guest output (via Hyperlight's DebugPrint port) goes to stderr.
+| Runtime | Status |
+|---------|--------|
+| Python  | ✅ CPython 3.12 (glibc) |
+| Node.js | ✅ Node 21 (musl/Alpine) |
