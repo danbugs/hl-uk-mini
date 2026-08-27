@@ -1,0 +1,286 @@
+# Known test failures — CPython 3.12 on Hyperlight-Unikraft
+#
+# This file documents every CPython Lib/test/ module that does NOT pass
+# in the Unikraft unikernel environment.  The conformance runner reads
+# it to build the skip list; any test_*.py module NOT listed here is
+# expected to pass.
+#
+# Categories
+# ──────────
+#   unsupported — fundamentally impossible in a unikernel
+#   may-fix     — could work with future Unikraft improvements
+#   fixable     — likely fixable with minor guest-side changes
+#
+# Run:  just conformance python
+
+# ═══════════════════════════════════════════════════════════════
+# Unsupported — will not work in a unikernel
+# ═══════════════════════════════════════════════════════════════
+
+[may-fix.no-subprocess]
+reason = "Test spawns Python subprocesses — vfork()+execve() exists in Unikraft but not wired up yet"
+todo = "Enable LIBPOSIX_PROCESS_MULTIPROCESS + APPELFLOADER_MULTIPROCESS kconfig"
+modules = [
+    "test_atexit",              # CRASH — verifies atexit handlers via subprocess
+    "test_audit",               # CRASH — tests sys.audit hooks via subprocess
+    "test_base64",              # CRASH — tests base64 CLI via subprocess.run()
+    "test_builtin",             # CRASH — tests exec/compile edge cases via subprocess
+    "test_bytes",               # CRASH — tests bytes CLI behavior via subprocess
+    "test_c_locale_coercion",   # CRASH — tests locale coercion by spawning with env vars
+    "test_calendar",            # CRASH — tests calendar CLI output via subprocess
+    "test_cgitb",               # CRASH — tests CGI traceback display via subprocess
+    "test_cmd_line",            # CRASH — tests Python CLI flags (-c, -m) via subprocess
+    "test_cmd_line_script",     # CRASH — tests script execution modes via subprocess
+    "test_code",                # CRASH — tests code object behavior via subprocess
+    "test_compile",             # CRASH — tests compilation edge cases via subprocess
+    "test_compileall",          # CRASH — compileall spawns worker subprocesses
+    "test_cprofile",            # CRASH — profiles child processes via subprocess
+    "test_dtrace",              # CRASH — tests DTrace probes via subprocess
+    "test_embed",               # CRASH — tests embedding Python via subprocess
+    "test_eof",                 # CRASH — tests EOF handling via subprocess stdin
+    "test_exceptions",          # CRASH — tests exception traceback via subprocess
+    "test_fork1",               # CRASH — tests os.fork() directly
+    "test_fstring",             # CRASH — tests f-string SyntaxError via subprocess
+    "test_gc",                  # CRASH — tests GC leak detection via subprocess
+    "test_gzip",                # CRASH — tests gzip CLI via subprocess
+    "test_hash",                # CRASH — tests PYTHONHASHSEED via subprocess
+    "test_http_cookies",        # CRASH — some edge-case tests spawn subprocess
+    "test_io",                  # CRASH — tests I/O crash isolation via subprocess
+    "test_mailcap",             # CRASH — tests MIME handling via subprocess
+    "test_marshal",             # CRASH — tests marshal edge cases via subprocess
+    "test_multiprocessing_main_handling", # ERROR — __main__ handling uses subprocess
+    "test_ntpath",              # CRASH — path edge cases trigger subprocess
+    "test_os",                  # CRASH — tests os.exec*, spawn, fork via subprocess
+    "test_pdb",                 # CRASH — tests debugger via subprocess interaction
+    "test_perf_profiler",       # CRASH — tests perf integration via subprocess
+    "test_pipes",               # ERROR — uses os.popen() / subprocess
+    "test_platform",            # CRASH — calls uname/subprocess for system info
+    "test_popen",               # CRASH — tests os.popen() directly
+    "test_posix",               # CRASH — tests fork, exec, wait via subprocess
+    "test_posixpath",           # CRASH — path edge cases trigger subprocess
+    "test_profile",             # CRASH — profiles via subprocess
+    "test_py_compile",          # CRASH — spawns subprocess for compilation
+    "test_quopri",              # CRASH — tests quoted-printable CLI via subprocess
+    "test_regrtest",            # CRASH — runs the test runner itself via subprocess
+    "test_repl",                # CRASH — tests REPL via subprocess stdin/stdout
+    "test_runpy",               # CRASH — tests python -m via subprocess
+    "test_script_helper",       # CRASH — every test spawns Python subprocesses
+    "test_shutil",              # CRASH — tests shutil.which, archive ops via subprocess
+    "test_site",                # CRASH — tests site module via subprocess env vars
+    "test_source_encoding",     # CRASH — tests encoding detection via subprocess
+    "test_subprocess",          # CRASH — directly tests subprocess module
+    "test_support",             # CRASH — test.support utilities use subprocess
+    "test_sys",                 # CRASH — tests sys.exit, sys.path via subprocess
+    "test_sysconfig",           # CRASH — tests sysconfig via subprocess
+    "test_tabnanny",            # CRASH — tests tabnanny CLI via subprocess
+    "test_tarfile",             # ERROR — uses subprocess for compression/extraction
+    "test_tokenize",            # CRASH — tests tokenize CLI via subprocess
+    "test_trace",               # CRASH — tests trace module via subprocess
+    "test_traceback",           # CRASH — tests traceback via subprocess
+    "test_tracemalloc",         # CRASH — tests memory tracking via subprocess
+    "test_utf8_mode",           # CRASH — tests PYTHONUTF8 env var via subprocess
+    "test_uuid",                # CRASH — calls system commands via subprocess
+    "test_venv",                # FAIL  — creates virtualenvs (needs subprocess)
+    "test_wait3",               # CRASH — tests os.wait3() (needs fork/child)
+    "test_wait4",               # CRASH — tests os.wait4() (needs fork/child)
+    "test_zipimport_support",   # CRASH — tests zipimport via subprocess
+]
+
+[may-fix.no-network]
+reason = "No network stack yet — socket bind/connect/listen operations unsupported"
+todo = "Wire up networking via host functions (supported in hl-uk, not yet in hl-uk-mini)"
+modules = [
+    "test_docxmlrpc",           # FAIL  — XML-RPC over HTTP
+    "test_ftplib",              # FAIL  — FTP client
+    "test_httplib",             # FAIL  — HTTP client
+    "test_httpservers",         # CRASH — HTTP server socket binding
+    "test_imaplib",             # FAIL  — IMAP client
+    "test_poplib",              # FAIL  — POP3 client
+    "test_robotparser",         # FAIL  — fetches robots.txt over HTTP
+    "test_smtplib",             # CRASH — SMTP client socket connect
+    "test_smtpnet",             # ERROR — SMTP network tests
+    "test_socket",              # ERROR — socket operations
+    "test_socketserver",        # FAIL  — socket server binding
+    "test_ssl",                 # ERROR — SSL/TLS over sockets
+    "test_telnetlib",           # FAIL  — Telnet client
+    "test_timeout",             # FAIL  — socket timeout operations
+    "test_urllib",              # FAIL  — URL operations over network
+    "test_urllib2",             # CRASH — urllib2 HTTP connections
+    "test_urllib2_localnet",    # FAIL  — urllib2 local network tests
+    "test_urllib_response",     # FAIL  — urllib response handling
+    "test_wsgiref",             # FAIL  — WSGI server (socket binding)
+    "test_xmlrpc",              # CRASH — XML-RPC client/server
+]
+
+[unsupported.no-terminal]
+reason = "No terminal/PTY — no /dev/pts, no curses, no readline"
+modules = [
+    "test_curses",              # ERROR — needs ncurses library
+    "test_openpty",             # FAIL  — needs /dev/ptmx
+    "test_pty",                 # FAIL  — needs PTY support
+    "test_readline",            # ERROR — needs readline library
+    "test_termios",             # FAIL  — needs terminal ioctls
+    "test_tty",                 # FAIL  — needs terminal device
+]
+
+[unsupported.platform-windows]
+reason = "Windows-only — tests for Windows-specific APIs"
+modules = [
+    "test_launcher",            # ERROR
+    "test_msilib",              # ERROR
+    "test_startfile",           # ERROR
+    "test_winapi",              # ERROR
+    "test_winconsoleio",        # ERROR
+    "test_winreg",              # ERROR
+    "test_winsound",            # ERROR
+    "test_wmi",                 # ERROR
+]
+
+[unsupported.platform-other]
+reason = "Platform-specific — requires BSD or Solaris kernel interfaces"
+modules = [
+    "test_devpoll",             # ERROR — Solaris /dev/poll
+    "test_kqueue",              # ERROR — BSD kqueue
+]
+
+[may-fix.missing-native-lib]
+reason = "Missing native C libraries not included in the unikernel rootfs"
+todo = "Add libraries to the driver Dockerfile and rebuild CPython with them"
+modules = [
+    "test_bz2",                 # ERROR — needs libbz2
+    "test_crypt",               # ERROR — needs libcrypt
+    "test_dbm_gnu",             # ERROR — needs libgdbm
+    "test_dbm_ndbm",            # ERROR — needs libndbm
+    "test_hashlib",             # ERROR — needs OpenSSL for _hashlib C extension
+    "test_lzma",                # ERROR — needs liblzma
+    "test_nis",                 # ERROR — needs NIS/YP libraries
+]
+
+[unsupported.gui]
+reason = "Requires Tk/Tcl GUI toolkit — not available in headless unikernel"
+modules = [
+    "test_idle",                # ERROR — IDLE editor (Tk)
+    "test_tcl",                 # ERROR — Tcl bindings
+    "test_tix",                 # ERROR — Tix widgets
+    "test_ttk_textonly",        # ERROR — ttk theme engine
+    "test_turtle",              # ERROR — turtle graphics (Tk)
+]
+
+[unsupported.cpython-internals]
+reason = "Tests CPython build tools — requires source tree and build environment"
+modules = [
+    "test_asdl_parser",         # ERROR — AST parser generator
+    "test_clinic",              # ERROR — Argument Clinic tool
+    "test_stable_abi_ctypes",   # ERROR — stable ABI checks
+]
+
+[unsupported.other]
+reason = "Miscellaneous unsupported features"
+modules = [
+    "test_perfmaps",            # FAIL  — Linux perf maps (/tmp/perf-*.map)
+]
+
+# ═══════════════════════════════════════════════════════════════
+# May-fix — could work with Unikraft improvements
+# ═══════════════════════════════════════════════════════════════
+
+[may-fix.threading]
+reason = "Cooperative scheduler crashes on thread lifecycle/join — threading partially works (test_threading_local ✓)"
+todo = "Investigate thread join/cleanup crash path in Unikraft's cooperative scheduler"
+modules = [
+    "test_thread",              # CRASH — _thread module lifecycle
+    "test_threading",           # CRASH — threading module (join, daemon, events)
+    "test_threadsignals",       # CRASH — thread + signal interaction
+    "test_concurrent_futures",  # CRASH — ThreadPoolExecutor / ProcessPoolExecutor
+    "test_logging",             # CRASH — logging uses threads + socket handlers
+    "test_tempfile",            # CRASH — tempfile thread-safety tests
+]
+
+[may-fix.signals]
+reason = "Incomplete signal delivery in unikernel environment"
+todo = "Investigate signal delivery — Hyperlight has hw-interrupt injection but it is currently disabled"
+modules = [
+    "test_eintr",               # CRASH — EINTR handling with signals + children
+    "test_faulthandler",        # CRASH — SIGSEGV/SIGFPE handler registration
+    "test_file_eintr",          # CRASH — file I/O EINTR with signal delivery
+    "test_signal",              # CRASH — signal handlers, alarm, setitimer
+    "test_time",                # CRASH — time.sleep with signal interruption
+]
+
+[may-fix.epoll]
+reason = "Incomplete epoll/poll shim — breaks selector-based I/O and asyncio"
+todo = "Fix epoll shim or implement proper poll() in Unikraft's VFS layer"
+modules = [
+    "test_asyncgen",            # FAIL  — async generators depend on asyncio/epoll
+    "test_contextlib_async",    # FAIL  — async context managers depend on asyncio
+    "test_epoll",               # FAIL  — epoll_create/epoll_ctl/epoll_wait
+    "test_poll",                # CRASH — poll() shim
+    "test_select",              # CRASH — select/poll/epoll
+    "test_selectors",           # FAIL  — selector abstraction over epoll/poll
+]
+
+[may-fix.subinterpreters]
+reason = "Cooperative scheduler lacks preemption for concurrent interpreters"
+todo = "Requires preemptive scheduling or interpreter isolation in Unikraft"
+modules = [
+    "test__xxinterpchannels",   # CRASH — cross-interpreter channel API
+    "test__xxsubinterpreters",  # FAIL  — sub-interpreter creation/management
+    "test_interpreters",        # CRASH — interpreter lifecycle
+]
+
+[may-fix.posix]
+reason = "Incomplete POSIX syscall implementation"
+todo = "Implement missing syscalls (fcntl locking, ioctl, mremap) in Unikraft"
+modules = [
+    "test_fcntl",               # CRASH — file locking (fcntl/flock)
+    "test_ioctl",               # ERROR — ioctl operations
+    "test_mmap",                # FAIL  — mremap() is a non-functional stub
+    "test_re",                  # FAIL  — regex edge cases (likely locale-dependent)
+]
+
+[may-fix.guest-crash]
+reason = "Guest crashes on complex internal operations — root cause needs investigation"
+todo = "Profile each crash to identify specific Unikraft limitation (GC, recursion depth, memory)"
+modules = [
+    "test_coroutines",          # CRASH — coroutine/async generator edge cases
+    "test_frame",               # CRASH — frame object internals
+    "test_generators",          # CRASH — generator edge cases
+    "test_graphlib",            # CRASH — topological sort (may timeout/OOM)
+    "test_itertools",           # CRASH — itertools edge cases
+    "test_struct",              # CRASH — struct pack/unpack edge cases
+    "test_structseq",           # CRASH — structseq C type internals
+    "test_sys_settrace",        # CRASH — settrace/setprofile callbacks
+    "test_unicode",             # CRASH — unicode codec/memory edge cases
+    "test_unicodedata",         # CRASH — large unicode database loading
+    "test_weakref",             # CRASH — weakref GC finalization
+    "test_zipfile64",           # CRASH — large (>4GB) zip handling (OOM)
+]
+
+# ═══════════════════════════════════════════════════════════════
+# Fixable — likely fixable with minor changes
+# ═══════════════════════════════════════════════════════════════
+
+[fixable.filesystem]
+reason = "Minor filesystem behavior differences (permissions, symlinks, case sensitivity)"
+todo = "Configure 9pfs or ramfs options; some may just need test-level workarounds"
+modules = [
+    "test_filecmp",             # FAIL  — file comparison edge cases
+    "test_fileio",              # FAIL  — file I/O mode/permission checks
+    "test_glob",                # FAIL  — glob pattern matching
+    "test_mailbox",             # FAIL  — mailbox file locking/permissions
+    "test_pathlib",             # FAIL  — path operations
+    "test_unicode_file",        # FAIL  — unicode filename handling
+    "test_zipimport",           # FAIL  — zipimport path handling
+]
+
+[fixable.posix-stubs]
+reason = "POSIX stubs return success but don't enforce — tests detect the lie"
+todo = "Populate /etc/group, implement rlimit, enforce stat mode bits"
+modules = [
+    "test_argparse",            # FAIL  — tests unreadable file (no permission enforcement)
+    "test_grp",                 # FAIL  — no /etc/group entries
+    "test_random",              # FAIL  — os.urandom fork-safety check (only vfork)
+    "test_resource",            # FAIL  — getrlimit/setrlimit are stubs
+    "test_stat",                # ERROR — stat mode bits not enforced
+    "test_type_params",         # FAIL  — type parameter edge case (minor)
+]
