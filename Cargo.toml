@@ -1,9 +1,17 @@
 [package]
-name = "hyperlight-unikraft-mini"
+name = "hyperlight-unikraft"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["cli"]
+cli = ["dep:clap", "dep:tracing-subscriber"]
+
 [dependencies]
-clap = { version = "4", features = ["derive"] }
 hyperlight-common = { git = "https://github.com/hyperlight-dev/hyperlight.git", branch = "hluk" }
 hyperlight-host = { git = "https://github.com/hyperlight-dev/hyperlight.git", branch = "hluk" }
+tracing = "0.1"
+
+# Optional — CLI only.
+clap = { version = "4", features = ["derive"], optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }

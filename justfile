@@ -107,7 +107,7 @@ run runtime script *args:
         *)      scratch=256 ;;
     esac
     just build
-    "{{root_dir}}/target/release/hyperlight-unikraft-mini" run \
+    "{{root_dir}}/target/release/hyperlight-unikraft" run \
         --initrd "$rootfs" \
         --scratch-mb "$scratch" \
         {{script}} {{args}}
@@ -116,7 +116,7 @@ run runtime script *args:
 [unix]
 run-snapshot snapshot script *args:
     just build
-    "{{root_dir}}/target/release/hyperlight-unikraft-mini" snapshot exec \
+    "{{root_dir}}/target/release/hyperlight-unikraft" snapshot exec \
         {{snapshot}} {{script}} {{args}}
 
 # ── Snapshot ─────────────────────────────────────────────────────
@@ -139,7 +139,7 @@ snapshot-save runtime *args:
     esac
     just build
     mkdir -p "{{snapshot_dir}}"
-    "{{root_dir}}/target/release/hyperlight-unikraft-mini" snapshot save \
+    "{{root_dir}}/target/release/hyperlight-unikraft" snapshot save \
         --initrd "$rootfs" \
         --scratch-mb "$scratch" \
         --output "{{snapshot_dir}}/{{runtime}}" {{args}}
