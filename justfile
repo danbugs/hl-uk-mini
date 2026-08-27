@@ -19,6 +19,7 @@ build_dir       := root_dir / "build-elfloader"
 snapshot_dir    := root_dir / ".snapshots"
 examples_dir    := root_dir / "examples"
 conformance_dir := root_dir / "conformance"
+benchmarks_dir  := root_dir / "benchmarks"
 
 # Per-runtime scratch memory (MiB). Must cover rootfs extraction +
 # runtime startup.
@@ -159,9 +160,198 @@ example-node: (run "node" (examples_dir / "node" / "hello.js"))
 test:
     cargo test --manifest-path "{{root_dir}}/Cargo.toml"
 
-# Run benchmarks (TODO)
-bench:
-    @echo "TODO: coming later"
+# Run benchmarks for a runtime across all workloads and modes.
+#
+# Usage:
+#   just bench python              # all modes, all workloads
+#   just bench python cold-snap    # one mode, all workloads
+[unix]
+bench runtime *mode:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    hluk="{{root_dir}}/target/release/hyperlight-unikraft"
+    rootfs="{{build_dir}}/{{runtime}}-rootfs.cpio"
+    snap_dir="{{snapshot_dir}}/{{runtime}}"
+    bench_dir="{{benchmarks_dir}}/{{runtime}}"
+
+    case "{{runtime}}" in
+        python) scratch={{scratch_python}} ;;
+        node)   scratch={{scratch_node}} ;;
+        *)      echo "error: unknown runtime '{{runtime}}'" >&2; exit 1 ;;
+    esac
+
+    if [ ! -f "$rootfs" ]; then
+        echo "==> rootfs not found, building first..."
+        just build-rootfs "{{runtime}}"
+    fi
+
+    just build
+
+    # Ensure snapshot exists
+    if [ ! -d "$snap_dir" ]; then
+        echo "==> Snapshot not found, saving first..."
+        "$hluk" snapshot save \
+            --initrd "$rootfs" \
+            --scratch-mb "$scratch" \
+            --output "$snap_dir"
+    fi
+
+    samples=20
+    parallel_vms=4
+    parallel_iters=10
+    modes="{{mode}}"
+    if [ -z "$modes" ]; then
+        modes="cold cold-snap warm-restore warm-stateful parallel"
+    fi
+
+    # Collect all workload scripts
+    workloads=()
+    for f in "$bench_dir"/*.py "$bench_dir"/*.js; do
+        [ -f "$f" ] && workloads+=("$f")
+    done
+    if [ ${#workloads[@]} -eq 0 ]; then
+        echo "error: no benchmark scripts in $bench_dir" >&2
+        exit 1
+    fi
+
+    # Capture full output for summary extraction
+    outfile=$(mktemp)
+    trap 'rm -f "$outfile"' EXIT
+
+    for script in "${workloads[@]}"; do
+        wname=$(basename "$script" | sed 's/\.\(py\|js\)$//')
+        for m in $modes; do
+            echo ""
+            echo "════════════════════════════════════════════"
+            echo "  {{runtime}} / $m / $wname"
+            echo "════════════════════════════════════════════"
+            case "$m" in
+                cold)
+                    "$hluk" bench cold \
+                        --initrd "$rootfs" --scratch-mb "$scratch" \
+                        --samples "$samples" "$script" \
+                        2>&1 | grep '^BENCH' \
+                        | sed "s/^BENCH /BENCH [${wname}] /" | tee -a "$outfile"
+                    ;;
+                cold-snap)
+                    "$hluk" bench cold-snap \
+                        --samples "$samples" "$snap_dir" "$script" \
+                        2>&1 | grep '^BENCH' \
+                        | sed "s/^BENCH /BENCH [${wname}] /" | tee -a "$outfile"
+                    ;;
+                warm-restore)
+                    "$hluk" bench warm-restore \
+                        --samples "$samples" "$snap_dir" "$script" \
+                        2>&1 | grep '^BENCH' \
+                        | sed "s/^BENCH /BENCH [${wname}] /" | tee -a "$outfile"
+                    ;;
+                warm-stateful)
+                    "$hluk" bench warm-stateful \
+                        --samples "$samples" "$snap_dir" "$script" \
+                        2>&1 | grep '^BENCH' \
+                        | sed "s/^BENCH /BENCH [${wname}] /" | tee -a "$outfile"
+                    ;;
+                parallel)
+                    "$hluk" bench parallel \
+                        --vms "$parallel_vms" --iterations "$parallel_iters" \
+                        "$snap_dir" "$script" \
+                        2>&1 | grep '^BENCH' \
+                        | sed "s/^BENCH /BENCH [${wname}] /" | tee -a "$outfile"
+                    ;;
+                *)
+                    echo "error: unknown mode '$m'" >&2
+                    exit 1
+                    ;;
+            esac
+        done
+    done
+
+    # ── Compact summary table ──────────────────────────────────
+    jsonfile="{{root_dir}}/bench-results.json"
+    echo ""
+    echo ""
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║  Benchmark Summary — {{runtime}}                            ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    awk -v jsonfile="$jsonfile" '
+    BEGIN { nw = 0 }
+    /^BENCH \[/ && /median=/ {
+        w = $2; gsub(/[][]/, "", w)
+        mode = $3; field = $4
+        split($5, kv, "="); val = kv[2]
+        if (!(w in ws)) { ws[w] = 1; wo[nw++] = w }
+        if (mode == "cold" && field == "total_ms") d["cold:" w] = val
+        if (mode == "cold-snap" && field == "total_ms") d["snap:" w] = val
+        if (mode == "warm-restore" && field == "exec_ms") d["wrest:" w] = val
+        if (mode == "warm-restore" && field == "restore_ms") d["rstr:" w] = val
+        if (mode == "warm-stateful" && field == "exec_ms") d["wstat:" w] = val
+        if (mode == "parallel" && field == "exec_ms") d["pexec:" w] = val
+    }
+    /^BENCH \[/ && /throughput=/ {
+        w = $2; gsub(/[][]/, "", w)
+        if (!(w in ws)) { ws[w] = 1; wo[nw++] = w }
+        for (i = 1; i <= NF; i++) {
+            if ($i ~ /^throughput=/) {
+                split($i, kv, "="); sub(/\/s$/, "", kv[2])
+                d["pthr:" w] = kv[2]
+            }
+        }
+    }
+    /^BENCH \[/ && /snapshot_mib=/ {
+        w = $2; gsub(/[][]/, "", w)
+        split($4, kv, "="); v = kv[2]
+        if (d["snap_sz:" w] == "") d["snap_sz:" w] = v
+    }
+    /^BENCH \[/ && /rss_mb=/ {
+        w = $2; gsub(/[][]/, "", w)
+        split($4, kv, "="); mb = kv[2] + 0
+        if (d["rss:" w] == "" || mb > d["rss:" w] + 0) d["rss:" w] = mb
+    }
+    END {
+        if (nw == 0) exit
+        printf "\n  %-28s", ""
+        for (i = 0; i < nw; i++) printf "%12s", wo[i]
+        printf "\n  "
+        for (i = 0; i < 28 + nw * 12; i++) printf "-"
+        printf "\n"
+        split("cold total (ms)|snap total (ms)|warm-restore exec (ms)|restore cost (ms)|warm-stateful exec (ms)|parallel throughput (/s)|parallel exec (ms)|snapshot size (MiB)|RSS (MB)", L, "|")
+        split("cold|snap|wrest|rstr|wstat|pthr|pexec|snap_sz|rss", K, "|")
+        for (r = 1; r <= 9; r++) {
+            has = 0
+            for (i = 0; i < nw; i++) if (d[K[r] ":" wo[i]] != "") has = 1
+            if (!has) continue
+            printf "  %-28s", L[r]
+            for (i = 0; i < nw; i++) {
+                v = d[K[r] ":" wo[i]]
+                printf "%12s", (v != "") ? v : "-"
+            }
+            printf "\n"
+        }
+        printf "\n"
+        if (jsonfile != "") {
+            printf "[\n" > jsonfile
+            f = 0
+            split("cold|snap|wrest|rstr|wstat|pexec|snap_sz|rss", JK, "|")
+            split("cold|cold-snap|warm-restore|restore-cost|warm-stateful|parallel-exec|snapshot-size|rss", JN, "|")
+            for (r = 1; r <= 8; r++) {
+                for (i = 0; i < nw; i++) {
+                    v = d[JK[r] ":" wo[i]]
+                    if (v == "") continue
+                    if (f) printf ",\n" > jsonfile
+                    f = 1
+                    if (JK[r] == "rss") u = "MB"
+                    else if (JK[r] == "snap_sz") u = "MiB"
+                    else u = "ms"
+                    printf "  {\"name\": \"%s/%s\", \"unit\": \"%s\", \"value\": %s}", JN[r], wo[i], u, v > jsonfile
+                }
+            }
+            printf "\n]\n" > jsonfile
+            close(jsonfile)
+        }
+    }
+    ' "$outfile"
+    echo ""
+    echo "  JSON: $jsonfile"
 
 # ── Conformance ─────────────────────────────────────────────────
 
