@@ -64,7 +64,7 @@ static inline void wrmsr_fsbase(uint64_t v)
 
 /* ── Dispatch callback ─────────────────────────────────────────── */
 
-static void py_dispatch(const uint8_t *fc, size_t fc_len)
+static int py_dispatch(const uint8_t *fc, size_t fc_len)
 {
 	if (g_py_fsbase)
 		wrmsr_fsbase(g_py_fsbase);
@@ -73,7 +73,7 @@ static void py_dispatch(const uint8_t *fc, size_t fc_len)
 	size_t code_len;
 	const char *code = fc_arg0_string(fc, fc_len, &code_len);
 	if (!code)
-		return;
+		return -1;
 
 	/* NUL-terminate — fc_arg0_string returns a non-terminated slice */
 	char stack_buf[4096];
@@ -83,18 +83,20 @@ static void py_dispatch(const uint8_t *fc, size_t fc_len)
 	} else {
 		buf = malloc(code_len + 1);
 		if (!buf)
-			return;
+			return -1;
 	}
 	memcpy(buf, code, code_len);
 	buf[code_len] = '\0';
 
-	PyRun_SimpleString(buf);
+	int rc = PyRun_SimpleString(buf);
 
 	if (buf != stack_buf)
 		free(buf);
 
 	fflush(stdout);
 	fflush(stderr);
+
+	return rc;
 }
 
 /* ── Entry point ───────────────────────────────────────────────── */
@@ -136,9 +138,6 @@ int main(int argc, char **argv, char **envp)
 
 	/* Register dispatch callback */
 	*g_callback_slot = py_dispatch;
-
-	fprintf(stderr, "hl_pydriver: ready\n");
-	fflush(stderr);
 
 	/*
 	 * Halt the VM.

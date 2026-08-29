@@ -16,21 +16,20 @@ See `../defconfig-elfloader` for the full kconfig used to build this kernel.
 If you need to rebuild the kernel (e.g. to pick up Unikraft changes):
 
 ```bash
-# 1. Clone and checkout the plat-hyperlight-cleanup branch
-git clone https://github.com/unikraft/unikraft.git
-cd unikraft
-git checkout plat-hyperlight-cleanup
+cd ~/repos/unikraft-project/app-elfloader
 
-# 2. Configure
-mkdir -p build
-cp /path/to/hyperlight-unikraft/defconfig-elfloader build/.config
-make A=/path/to/app-elfloader O=build olddefconfig
+# Copy defconfig into the app-elfloader root (NOT build/.config — the
+# Makefile always reads .config from here regardless of O= flags).
+cp ~/repos/hyperlight-unikraft-mini/defconfig-elfloader .config
 
-# 3. Build
-make A=/path/to/app-elfloader O=build -j$(nproc)
+# Clean stale build artifacts, expand the defconfig, then build.
+make properclean
+make olddefconfig
+make -j$(nproc)
 
-# 4. Copy the binary
-cp build/elfloader_hyperlight-x86_64 /path/to/hyperlight-unikraft/kernel/
+# Copy the binary back
+cp workdir/build/elfloader_hyperlight-x86_64 \
+   ~/repos/hyperlight-unikraft-mini/kernel/
 ```
 
 <!-- TODO: upstream kernel changes to kraft so this can be built with

@@ -1,4 +1,6 @@
-FROM python:3.12-slim AS build
+# Pin to bookworm (glibc 2.36) — newer Debian ships glibc 2.41 which
+# uses syscalls Unikraft doesn't support yet.
+FROM python:3.12-slim-bookworm AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc libc6-dev python3-dev && \
@@ -37,6 +39,9 @@ COPY --from=build /usr/local/lib/python3.12 /usr/local/lib/python3.12
 COPY --from=build /etc/ld.so.conf /etc/ld.so.conf
 COPY --from=build /etc/ld.so.conf.d /etc/ld.so.conf.d
 COPY --from=build /etc/ld.so.cache /etc/ld.so.cache
+
+# /tmp needed for guest filesystem writes (ramfs, in-memory)
+COPY --from=build /tmp /tmp
 
 # Hyperlight driver
 COPY --from=build /hl_pydriver /usr/local/bin/hl_pydriver

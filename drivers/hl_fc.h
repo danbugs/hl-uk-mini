@@ -123,6 +123,6 @@ static inline uintptr_t hl_parse_hex(const char *s)
 
 /* ── Callback type ─────────────────────────────────────────────── */
 
-typedef void (*hl_dispatch_fn_t)(const uint8_t *fc, size_t fc_len);
+typedef int (*hl_dispatch_fn_t)(const uint8_t *fc, size_t fc_len);
 
 #endif /* HL_FC_H */

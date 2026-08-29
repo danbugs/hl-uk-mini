@@ -70,6 +70,12 @@ build-rootfs runtime:
     cid=$(docker create --entrypoint=/ "$image" 2>/dev/null || docker create "$image")
     docker export "$cid" | tar -C "$tmpdir" -xf -
     docker rm "$cid" > /dev/null
+    # docker export replaces /etc/hosts, /etc/resolv.conf with empty
+    # virtual mounts — restore minimal versions.
+    # 'unikraft' = Unikraft's default hostname (gethostname()).
+    printf '127.0.0.1 localhost unikraft\n::1 localhost unikraft\n' > "$tmpdir/etc/hosts"
+    # nsswitch.conf: tell glibc to only check /etc/hosts (no DNS)
+    printf 'hosts: files\n' > "$tmpdir/etc/nsswitch.conf"
     (cd "$tmpdir" && find . | cpio -o -H newc --quiet > "$output")
     echo "==> Done: $output ($(du -h "$output" | cut -f1))"
 
@@ -78,6 +84,31 @@ build-rootfs runtime:
 build-rootfs runtime:
     @echo "error: build-rootfs requires WSL on Windows"
     @echo "Use: wsl just build-rootfs {{runtime}}"
+
+# Clean rebuild of a rootfs — pulls fresh base images, no Docker cache.
+# Also nukes stale snapshots. Use when base images or drivers change.
+[unix]
+rebuild-rootfs runtime:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dockerfile="{{drivers_dir}}/{{runtime}}/Dockerfile"
+    if [ ! -f "$dockerfile" ]; then
+        echo "error: $dockerfile not found" >&2
+        exit 1
+    fi
+    # Pull fresh base images (skip local build stages like "hluk-python-rootfs")
+    for img in $(grep '^FROM ' "$dockerfile" | awk '{print $2}' | sort -u); do
+        if docker pull "$img" 2>/dev/null; then
+            echo "==> Pulled $img"
+        fi
+    done
+    image="hluk-{{runtime}}-rootfs"
+    echo "==> Rebuilding $image (--no-cache)"
+    docker build --no-cache -t "$image" -f "$dockerfile" "{{drivers_dir}}/"
+    just build-rootfs "{{runtime}}"
+    # Invalidate snapshots built from the old rootfs
+    rm -rf "{{snapshot_dir}}/{{runtime}}" "{{snapshot_dir}}/{{runtime}}-conformance"
+    echo "==> Stale snapshots removed"
 
 # List available runtimes
 [unix]
@@ -109,7 +140,7 @@ run runtime script *args:
         *)      scratch=256 ;;
     esac
     just build
-    "{{root_dir}}/target/release/hyperlight-unikraft" run \
+    "{{root_dir}}/target/release/hluk" run \
         --initrd "$rootfs" \
         --scratch-mb "$scratch" \
         {{script}} {{args}}
@@ -118,7 +149,7 @@ run runtime script *args:
 [unix]
 run-snapshot snapshot script *args:
     just build
-    "{{root_dir}}/target/release/hyperlight-unikraft" snapshot exec \
+    "{{root_dir}}/target/release/hluk" snapshot exec \
         {{snapshot}} {{script}} {{args}}
 
 # ── Snapshot ─────────────────────────────────────────────────────
@@ -141,7 +172,7 @@ snapshot-save runtime *args:
     esac
     just build
     mkdir -p "{{snapshot_dir}}"
-    "{{root_dir}}/target/release/hyperlight-unikraft" snapshot save \
+    "{{root_dir}}/target/release/hluk" snapshot save \
         --initrd "$rootfs" \
         --scratch-mb "$scratch" \
         --output "{{snapshot_dir}}/{{runtime}}" {{args}}
@@ -169,7 +200,7 @@ test:
 bench runtime *mode:
     #!/usr/bin/env bash
     set -euo pipefail
-    hluk="{{root_dir}}/target/release/hyperlight-unikraft"
+    hluk="{{root_dir}}/target/release/hluk"
     rootfs="{{build_dir}}/{{runtime}}-rootfs.cpio"
     snap_dir="{{snapshot_dir}}/{{runtime}}"
     bench_dir="{{benchmarks_dir}}/{{runtime}}"
@@ -383,6 +414,12 @@ build-conformance runtime:
     cid=$(docker create --entrypoint=/ "$image" 2>/dev/null || docker create "$image")
     docker export "$cid" | tar -C "$tmpdir" -xf -
     docker rm "$cid" > /dev/null
+    # docker export replaces /etc/hosts, /etc/resolv.conf with empty
+    # virtual mounts — restore minimal versions.
+    # 'unikraft' = Unikraft's default hostname (gethostname()).
+    printf '127.0.0.1 localhost unikraft\n::1 localhost unikraft\n' > "$tmpdir/etc/hosts"
+    # nsswitch.conf: tell glibc to only check /etc/hosts (no DNS)
+    printf 'hosts: files\n' > "$tmpdir/etc/nsswitch.conf"
     (cd "$tmpdir" && find . | cpio -o -H newc --quiet > "$output")
     echo "==> Done: $output ($(du -h "$output" | cut -f1))"
 
@@ -396,7 +433,7 @@ build-conformance runtime:
 conformance runtime *modules:
     #!/usr/bin/env bash
     set -uo pipefail
-    hluk="{{root_dir}}/target/release/hyperlight-unikraft"
+    hluk="{{root_dir}}/target/release/hluk"
     rootfs="{{build_dir}}/{{runtime}}-conformance.cpio"
     snap_dir="{{snapshot_dir}}/{{runtime}}-conformance"
     manifest="{{conformance_dir}}/{{runtime}}/known_failures.toml"

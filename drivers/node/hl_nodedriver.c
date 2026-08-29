@@ -52,20 +52,20 @@ static int g_pipe_from_node;  /* parent reads ack here */
 
 /* ── Dispatch callback ─────────────────────────────────────────── */
 
-static void node_dispatch(const uint8_t *fc, size_t fc_len)
+static int node_dispatch(const uint8_t *fc, size_t fc_len)
 {
 	/* Extract the code string from the FunctionCall FlatBuffer */
 	size_t code_len;
 	const char *code = fc_arg0_string(fc, fc_len, &code_len);
 	if (!code)
-		return;
+		return -1;
 
 	/* Send length (8 bytes LE) + code to the child */
 	uint64_t len64 = (uint64_t)code_len;
 	if (write(g_pipe_to_node, &len64, 8) != 8) {
 		fprintf(stderr, "hl_nodedriver: pipe write (len) failed\n");
 		fflush(stderr);
-		return;
+		return -1;
 	}
 	const char *p = code;
 	size_t remaining = code_len;
@@ -74,20 +74,22 @@ static void node_dispatch(const uint8_t *fc, size_t fc_len)
 		if (n <= 0) {
 			fprintf(stderr, "hl_nodedriver: pipe write (data) failed\n");
 			fflush(stderr);
-			return;
+			return -1;
 		}
 		p += n;
 		remaining -= n;
 	}
 
-	/* Wait for ack — child sends 0x00 after eval completes.
+	/* Wait for ack — child sends 0x00 on success, 0x01 on error.
 	 * This read blocks and yields to the cooperative scheduler,
 	 * which switches to the child Node thread. */
-	char ack;
+	char ack = 1;
 	if (read(g_pipe_from_node, &ack, 1) != 1) {
 		fprintf(stderr, "hl_nodedriver: ack read failed\n");
 		fflush(stderr);
+		return -1;
 	}
+	return ack != 0 ? -1 : 0;
 }
 
 /* ── Bootstrap JS ─────────────────────────────────────────────── */
@@ -133,11 +135,11 @@ static int write_bootstrap(int fd_in, int fd_out)
 		"  try {\n"
 		"    let result = (0, eval)(code);\n"
 		"    if (result !== undefined) console.log(result);\n"
+		"    fs.writeSync(fd_out, Buffer.from([0]));  // success ack\n"
 		"  } catch (e) {\n"
 		"    console.error(e.stack || e);\n"
+		"    fs.writeSync(fd_out, Buffer.from([1]));  // error ack\n"
 		"  }\n"
-		"  // Ack — tells parent eval is done\n"
-		"  fs.writeSync(fd_out, Buffer.from([0]));\n"
 		"}\n",
 		fd_in, fd_out);
 
@@ -204,8 +206,6 @@ int main(int argc, char **argv, char **envp)
 	/* Wait for the child to signal ready.
 	 * This blocks, the scheduler switches to the child,
 	 * V8 starts up, the bootstrap writes the ready byte. */
-	fprintf(stderr, "hl_nodedriver: waiting for V8 startup...\n");
-	fflush(stderr);
 	char ready;
 	if (read(g_pipe_from_node, &ready, 1) != 1) {
 		fprintf(stderr, "hl_nodedriver: child failed to start\n");
@@ -214,9 +214,6 @@ int main(int argc, char **argv, char **envp)
 
 	/* Register dispatch callback */
 	*g_callback_slot = node_dispatch;
-
-	fprintf(stderr, "hl_nodedriver: ready (pid %d)\n", pid);
-	fflush(stderr);
 
 	/*
 	 * Halt the VM — same pattern as pydriver.

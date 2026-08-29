@@ -12,6 +12,8 @@ CONFIG_LIBPOSIX_MMAP=y
 CONFIG_APPELFLOADER_CUSTOMAPPNAME=y
 CONFIG_APPELFLOADER_VFSEXEC=y
 CONFIG_APPELFLOADER_VFSEXEC_EXECBIT=n
+# Don't search PATH for the executable — our driver sets the path directly
+CONFIG_APPELFLOADER_VFSEXEC_ENVPATH=n
 CONFIG_APPELFLOADER_STACK_NBPAGES=512
 # POSIX subsystems Python needs
 CONFIG_LIBDEVFS=y
@@ -49,10 +51,17 @@ CONFIG_LIBVFSCORE_AUTOMOUNT_CI=y
 CONFIG_LIBVFSCORE_AUTOMOUNT_CI_INITRD=y
 CONFIG_LIBVFSCORE_AUTOMOUNT_UP=y
 CONFIG_LIBVFSCORE_NONLARGEFILE=y
+# Command-line parameter parsing — needed for vfs.fstab= cmdline arg
+CONFIG_LIBUKLIBPARAM=y
 # Boot
 CONFIG_LIBUKBOOT_MAINTHREAD=y
 CONFIG_LIBUKBOOT_HEAP_BASE=0x400000000
-# Larger kernel stack — Python's import machinery is deep
-CONFIG_STACK_SIZE_PAGE_ORDER=6
-# No networking for now
+# Larger kernel stack — Python's networking tests need deep call chains
+CONFIG_STACK_SIZE_PAGE_ORDER=8
+# Host filesystem pass-through
+CONFIG_LIBHOSTFS=y
+# Host networking pass-through
+CONFIG_LIBHOSTSOCK=y
+# No userspace TCP/IP stack — networking goes through hostsock
 # CONFIG_LIBLWIP is not set
+CONFIG_LIBUKBOOT_BANNER_NONE=y
