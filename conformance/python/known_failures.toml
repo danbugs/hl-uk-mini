@@ -86,30 +86,30 @@ modules = [
     "test_zipimport_support",   # CRASH — tests zipimport via subprocess
 ]
 
-[may-fix.no-network]
-reason = "No network stack yet — socket bind/connect/listen operations unsupported"
-todo = "Wire up networking via host functions (supported in hl-uk, not yet in hl-uk-mini)"
+[may-fix.networking]
+reason = """hostsock individual ops (accept/recv/send) work with the EAGAIN+retry pattern, \
+but tests that run a threaded server using select()/poll() hang — Unikraft's epoll/poll shim \
+does not fully propagate socket readiness events set by the idle-loop rescan, so a thread \
+blocked in select() never wakes up.  AF_UNIX and SSL are unsupported."""
+todo = "Fix epoll/poll shim integration with posix_sock_event_set(); getaddrinfo V4MAPPED assertion crash in net_resolve"
 modules = [
-    "test_docxmlrpc",           # FAIL  — XML-RPC over HTTP
-    "test_ftplib",              # FAIL  — FTP client
-    "test_httplib",             # FAIL  — HTTP client
-    "test_httpservers",         # CRASH — HTTP server socket binding
-    "test_imaplib",             # FAIL  — IMAP client
-    "test_poplib",              # FAIL  — POP3 client
-    "test_robotparser",         # FAIL  — fetches robots.txt over HTTP
-    "test_smtplib",             # CRASH — SMTP client socket connect
+    "test_docxmlrpc",           # HANG  — XML-RPC over HTTP; threaded server's select() never wakes
+    "test_ftplib",              # CRASH — FTP client uses threaded server with select()
+    "test_httplib",             # HANG  — 142/147 pass, 5 hang on threaded server's select() loop
+    "test_httpservers",         # CRASH — HTTP server socket binding with threaded select()
+    "test_imaplib",             # CRASH — IMAP client uses threaded server with select()
+    "test_poplib",              # CRASH — POP3 client uses threaded server with select()
+    "test_robotparser",         # HANG  — 59/60 pass, 1 hangs on threaded server's select()
+    "test_smtplib",             # CRASH — SMTP client uses threaded server with select()
     "test_smtpnet",             # ERROR — SMTP network tests
-    "test_socket",              # ERROR — socket operations
-    "test_socketserver",        # FAIL  — socket server binding
-    "test_ssl",                 # ERROR — SSL/TLS over sockets
-    "test_telnetlib",           # FAIL  — Telnet client
-    "test_timeout",             # FAIL  — socket timeout operations
-    "test_urllib",              # FAIL  — URL operations over network
-    "test_urllib2",             # CRASH — urllib2 HTTP connections
-    "test_urllib2_localnet",    # FAIL  — urllib2 local network tests
-    "test_urllib_response",     # FAIL  — urllib response handling
-    "test_wsgiref",             # FAIL  — WSGI server (socket binding)
-    "test_xmlrpc",              # CRASH — XML-RPC client/server
+    "test_socket",              # CRASH — non-threaded tests pass; threaded tests hang; getaddrinfo V4MAPPED crash
+    "test_socketserver",        # CRASH — socket server with threaded select()
+    "test_ssl",                 # ERROR — SSL/TLS (needs OpenSSL)
+    "test_timeout",             # HANG  — 13/14 pass, 1 hangs on threaded server's select()
+    "test_urllib2",             # CRASH — urllib2 HTTP uses threaded server with select()
+    "test_urllib2_localnet",    # CRASH — urllib2 local network with threaded select()
+    "test_wsgiref",             # HANG  — 36/37 pass, 1 hangs on threaded server's select()
+    "test_xmlrpc",              # CRASH — XML-RPC client/server with threaded select()
 ]
 
 [unsupported.no-terminal]

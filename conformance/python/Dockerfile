@@ -8,7 +8,7 @@
 
 FROM hluk-python-rootfs AS base
 
-FROM python:3.12-slim AS testsuite
+FROM python:3.12-slim-bookworm AS testsuite
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         wget xz-utils && \
