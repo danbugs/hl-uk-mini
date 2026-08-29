@@ -3,6 +3,10 @@ name = "hyperlight-unikraft"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "hluk"
+path = "src/main.rs"
+
 [features]
 default = ["cli"]
 cli = ["dep:clap", "dep:tracing-subscriber"]
@@ -11,6 +15,11 @@ cli = ["dep:clap", "dep:tracing-subscriber"]
 hyperlight-common = { git = "https://github.com/hyperlight-dev/hyperlight.git", branch = "hluk" }
 hyperlight-host = { git = "https://github.com/hyperlight-dev/hyperlight.git", branch = "hluk" }
 tracing = "0.1"
+
+# Host I/O — filesystem (cap-std) and networking (socket2).
+cap-std = "3"
+socket2 = { version = "0.5", features = ["all"] }
+libc = "0.2"
 
 # Optional — CLI only.
 clap = { version = "4", features = ["derive"], optional = true }
