@@ -2,22 +2,28 @@
 //! on Hyperlight.
 //!
 //! ```no_run
-//! use hyperlight_unikraft::{create_sandbox, init, run, Exec};
+//! use hyperlight_unikraft::{create_sandbox, init, run, Exec, Mount};
 //!
-//! let (usandbox, _cfg) = create_sandbox(
+//! // Simple sandbox — no mounts, no networking.
+//! let (usandbox, cfg) = create_sandbox(
 //!     &Some("rootfs/python.cpio".into()),
 //!     &None,
 //!     256,
+//!     Vec::new(),
+//!     false,
 //! )?;
 //! let mut sandbox = init(usandbox)?;
 //! run(&mut sandbox, "print('hello')")?;
-//! run(&mut sandbox, Exec::File("examples/python/hello.py".into()))?;
+//! let output = cfg.drain_output();
+//! assert!(output.contains("hello"));
 //! # Ok::<(), hyperlight_unikraft::hyperlight_host::HyperlightError>(())
 //! ```
 
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read as _, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 pub use hyperlight_host;
 
@@ -31,6 +37,9 @@ use hyperlight_host::{
 pub use hyperlight_host::{HostFunctions, sandbox::snapshot::{OciTag, Snapshot}};
 
 use tracing::{debug, info};
+
+mod hostfs;
+mod hostnet;
 
 // ── Constants ───────────────────────────────────────────────────────────
 
@@ -50,6 +59,18 @@ pub const INITRD_MAP_BASE: u64 = 0xFEF0_0000;
 /// images (e.g. Node's 100 MiB binary needs ~512 MiB).
 pub const DEFAULT_SCRATCH_MB: usize = 256;
 
+/// PEB I/O stack size for host-call data transfer.
+///
+/// Both the input stack (host→guest results) and output stack
+/// (guest→host calls) must hold a FlatBuffer-encoded message.  The
+/// guest's generic hcall encoder (`g_generic_fc_buf`) is 64 KiB, so
+/// the I/O stacks must be at least that large.  We add headroom for
+/// the stack header (8 bytes) and alignment padding.
+///
+/// Default Hyperlight stacks are only 16 KiB — too small for large
+/// file or network transfers.
+const IO_STACK_SIZE: usize = 65536 + 4096;
+
 /// PEB heap size.
 ///
 /// Only needed for the boot stack (allocated before `ukplat_mem_init`).
@@ -59,6 +80,37 @@ pub const HEAP_SIZE: u64 = 0x10_0000; // 1 MiB
 
 /// OCI tag used when saving/loading snapshots to disk.
 pub const SNAPSHOT_TAG: &str = "latest";
+
+// ── Mount ───────────────────────────────────────────────────────────────
+
+/// A host filesystem mount passed to the guest.
+#[derive(Debug, Clone)]
+pub struct Mount {
+    /// Guest-visible mount point (e.g. `/mnt/data`).
+    pub guest_path: String,
+    /// Host directory to expose.
+    pub host_path: PathBuf,
+    /// Mount read-only (`true` → `MNT_RDONLY`, writes return `EROFS`).
+    pub readonly: bool,
+}
+
+impl Mount {
+    /// Create a read-write mount.
+    ///
+    /// Parameter order matches Docker convention: host (source) first,
+    /// guest (target) second.
+    pub fn rw(host_path: impl Into<PathBuf>, guest_path: impl Into<String>) -> Self {
+        Self { guest_path: guest_path.into(), host_path: host_path.into(), readonly: false }
+    }
+
+    /// Create a read-only mount.
+    ///
+    /// Parameter order matches Docker convention: host (source) first,
+    /// guest (target) second.
+    pub fn ro(host_path: impl Into<PathBuf>, guest_path: impl Into<String>) -> Self {
+        Self { guest_path: guest_path.into(), host_path: host_path.into(), readonly: true }
+    }
+}
 
 // ── GuestConfig ─────────────────────────────────────────────────────────
 
@@ -71,6 +123,12 @@ pub struct GuestConfig {
     pub scratch_size: usize,
     pub initrd_base: u64,
     pub initrd_size: u64,
+    /// Host filesystem mounts.
+    pub mounts: Vec<Mount>,
+    /// Enable host networking (hostsock).
+    pub net: bool,
+    /// Captured guest stdout — accumulated by the HostPrint callback.
+    output: Arc<Mutex<String>>,
 }
 
 impl GuestConfig {
@@ -90,14 +148,25 @@ impl GuestConfig {
     ///
     /// Works for both the init path (`UninitializedSandbox`) and the
     /// snapshot-restore path (`HostFunctions`).
+    /// Drain captured guest output, clearing the buffer.
+    pub fn drain_output(&self) -> String {
+        self.output.lock().unwrap().split_off(0)
+    }
+
     pub fn register(&self, target: &mut impl Registerable) -> hyperlight_host::Result<()> {
         // Override Hyperlight's default HostPrint (which wraps output in
-        // green ANSI on stdout) — send guest output to stdout uncolored.
+        // green ANSI on stdout) — send guest output to stdout uncolored,
+        // and capture it for programmatic access.
+        let output = self.output.clone();
         target.register_host_function(
             "HostPrint",
-            |msg: String| -> hyperlight_host::Result<i32> {
+            move |msg: String| -> hyperlight_host::Result<i32> {
+                use std::io::Write;
+                let len = msg.len() as i32;
                 print!("{msg}");
-                Ok(msg.len() as i32)
+                let _ = std::io::stdout().flush();
+                output.lock().unwrap().push_str(&msg);
+                Ok(len)
             },
         )?;
 
@@ -140,6 +209,26 @@ impl GuestConfig {
                     .unwrap_or(0))
             },
         )?;
+
+        target.register_host_function(
+            "GetHostFsChunkSize",
+            || -> hyperlight_host::Result<u64> {
+                Ok(hostfs::CHUNK as u64)
+            },
+        )?;
+
+        // Register per-operation host functions for filesystem and networking.
+        if !self.mounts.is_empty() {
+            let hfs_mounts: Vec<(String, PathBuf, bool)> = self
+                .mounts
+                .iter()
+                .map(|m| (m.guest_path.clone(), m.host_path.clone(), m.readonly))
+                .collect();
+            hostfs::register(target, &hfs_mounts)?;
+        }
+        if self.net {
+            hostnet::register(target)?;
+        }
 
         Ok(())
     }
@@ -231,11 +320,16 @@ pub fn create_sandbox(
     initrd: &Option<PathBuf>,
     entry: &Option<String>,
     scratch_mb: usize,
+    mounts: Vec<Mount>,
+    net: bool,
 ) -> hyperlight_host::Result<(UninitializedSandbox, GuestConfig)> {
     let scratch_size = scratch_mb * 1024 * 1024;
     let mut cfg = SandboxConfiguration::default();
     cfg.set_scratch_size(scratch_size);
     cfg.set_heap_size(HEAP_SIZE);
+
+    cfg.set_input_data_size(IO_STACK_SIZE);
+    cfg.set_output_data_size(IO_STACK_SIZE);
 
     let mut usandbox = UninitializedSandbox::new(GuestBinary::Buffer(KERNEL), Some(cfg))?;
 
@@ -253,15 +347,58 @@ pub fn create_sandbox(
     };
 
     let entry = resolve_entry(entry, initrd);
-    let cmdline = match &entry {
-        Some(e) => format!("unikraft-hyperlight {e}"),
-        None => "unikraft-hyperlight".to_string(),
-    };
+
+    // Build the kernel command line.
+    //
+    // Unikraft's uklibparam parser requires a `--` separator between
+    // kernel parameters (like vfs.fstab) and application arguments
+    // (like the entry point path).  Without `--`, uklibparam skips
+    // parsing entirely and cmdline parameters are silently ignored.
+    //
+    // Layout: <progname> [kernel params...] -- [entry point]
+    let mut cmdline = "unikraft-hyperlight".to_string();
+
+    // Inject vfs.fstab entries so the kernel mounts hostfs at each
+    // guest path.  The source-device field carries the mount index
+    // (used by hostfs to route hcalls to the correct host Dir).
+    if !mounts.is_empty() {
+        cmdline.push_str(" vfs.fstab=[");
+        for (i, m) in mounts.iter().enumerate() {
+            if i > 0 {
+                cmdline.push(' ');
+            }
+            // MNT_RDONLY = 0x1
+            let flags = if m.readonly { "0x1" } else { "0x0" };
+            // Format: sdev:path:drv:flags:opts:ukopts
+            // mkmp = make mount point (creates the directory if missing)
+            // No quotes — uk_libparam doesn't strip them.
+            write!(cmdline, "{i}:{}:hostfs:{flags}::mkmp", m.guest_path).unwrap();
+        }
+        cmdline.push(']');
+    }
+
+    // Entry point path.  The `--` separator is needed only when there
+    // are kernel params (like vfs.fstab) before it — uklibparam strips
+    // everything up to `--` and adjusts argv so the elfloader sees the
+    // driver path at argv[1].  Without kernel params, skip `--` so
+    // argv[1] is the path directly (uklibparam's scan returns 0 for a
+    // leading `--` and skips adjustment).
+    if let Some(e) = &entry {
+        if !mounts.is_empty() {
+            write!(cmdline, " -- {e}").unwrap();
+        } else {
+            write!(cmdline, " {e}").unwrap();
+        }
+    }
+
     let config = GuestConfig {
         cmdline,
         scratch_size,
         initrd_base,
         initrd_size,
+        mounts,
+        net,
+        output: Arc::new(Mutex::new(String::new())),
     };
 
     config.register(&mut usandbox)?;
@@ -302,6 +439,10 @@ impl From<String> for Exec {
 ///
 /// Dispatches to the guest's driver callback. Accepts inline code
 /// (`"print('hi')"`) or a file path (`Exec::File("hello.py".into())`).
+///
+/// Guest stdout is captured in the [`GuestConfig`] returned by
+/// [`create_sandbox`].  Call [`GuestConfig::drain_output`] after
+/// `run()` to retrieve what the guest printed.
 pub fn run(
     sandbox: &mut MultiUseSandbox,
     exec: impl Into<Exec>,
@@ -325,18 +466,39 @@ pub fn run(
 /// Convenience wrapper: creates a default [`GuestConfig`] (snapshot
 /// already has the guest's cmdline/initrd), registers host functions,
 /// and builds a [`MultiUseSandbox`] from the snapshot.
+///
+/// **Note:** If the snapshot was created with filesystem mounts, the
+/// same mounts must be passed here.  The guest kernel's fstab entries
+/// are baked into the snapshot; the `mounts` parameter re-registers
+/// the host-side functions that serve those mounts.  Passing different
+/// or empty mounts when the snapshot expects them will cause guest I/O
+/// errors.
+///
+/// TODO: Add a `GetMountConfig` host function so the kernel can query
+/// mount configuration at restore time and reconcile its VFS mount
+/// table — unmounting stale entries and mounting new ones — instead of
+/// requiring the caller to pass identical mounts.
 pub fn restore(
-    snapshot: std::sync::Arc<Snapshot>,
-) -> hyperlight_host::Result<MultiUseSandbox> {
+    snapshot: Arc<Snapshot>,
+    mounts: Vec<Mount>,
+    net: bool,
+) -> hyperlight_host::Result<(MultiUseSandbox, GuestConfig)> {
+    if mounts.is_empty() {
+        debug!("restore: no mounts provided — if the snapshot was saved with mounts, hostfs operations will fail");
+    }
     let config = GuestConfig {
         cmdline: String::new(),
         scratch_size: DEFAULT_SCRATCH_MB * 1024 * 1024,
         initrd_base: 0,
         initrd_size: 0,
+        mounts,
+        net,
+        output: Arc::new(Mutex::new(String::new())),
     };
     let mut hf = HostFunctions::default();
     config.register(&mut hf)?;
-    MultiUseSandbox::from_snapshot(snapshot, hf, None)
+    let sandbox = MultiUseSandbox::from_snapshot(snapshot, hf, None)?;
+    Ok((sandbox, config))
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -353,6 +515,9 @@ mod tests {
             scratch_size: 256 * 1024 * 1024,
             initrd_base: 0,
             initrd_size: 0,
+            mounts: Vec::new(),
+            net: false,
+            output: Arc::new(Mutex::new(String::new())),
         };
         assert_eq!(cfg.paging_budget(), 192 * 1024 * 1024);
     }
@@ -482,5 +647,377 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- Mount / fstab tests --
+
+    #[test]
+    fn mount_rw_host_first() {
+        let m = Mount::rw("/host/dir", "/guest/path");
+        assert_eq!(m.host_path, PathBuf::from("/host/dir"));
+        assert_eq!(m.guest_path, "/guest/path");
+        assert!(!m.readonly);
+    }
+
+    #[test]
+    fn mount_ro_host_first() {
+        let m = Mount::ro("/host/dir", "/guest/path");
+        assert_eq!(m.host_path, PathBuf::from("/host/dir"));
+        assert_eq!(m.guest_path, "/guest/path");
+        assert!(m.readonly);
+    }
+
+    #[test]
+    fn fstab_cmdline_single_rw_mount() {
+        let mounts = vec![Mount::rw("/tmp/share", "/mnt/host")];
+        let mut cmdline = "unikraft-hyperlight /entry".to_string();
+        if !mounts.is_empty() {
+            cmdline.push_str(" vfs.fstab=[");
+            for (i, m) in mounts.iter().enumerate() {
+                if i > 0 { cmdline.push(' '); }
+                let flags = if m.readonly { "0x1" } else { "0x0" };
+                std::fmt::Write::write_fmt(
+                    &mut cmdline,
+                    format_args!("{i}:{}:hostfs:{flags}::mkmp", m.guest_path),
+                ).unwrap();
+            }
+            cmdline.push(']');
+        }
+        assert_eq!(
+            cmdline,
+            "unikraft-hyperlight /entry vfs.fstab=[0:/mnt/host:hostfs:0x0::mkmp]",
+        );
+    }
+
+    /// Reproduce the exact byte output of the C `fb_encode_generic` encoder
+    /// for `fs_stat(0, "hello.txt")` and verify Hyperlight can parse it.
+    #[test]
+    fn flatbuffer_generic_encoder_roundtrip() {
+        use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
+
+        // Construct the exact bytes the C fb_encode_generic would produce
+        // for hl_hcall_vecbytes("fs_stat", [hlint(0), hlstring("hello.txt")], 2).
+        //
+        // This replicates the logic in hcall.c fb_encode_generic.
+        let c_bytes = build_c_generic_fb(
+            "fs_stat",
+            2,  // HL_FCT_HOST
+            9,  // HL_RT_VECBYTES (= hlsizeprefixedbuffer)
+            &[
+                CParam::Int(0),
+                CParam::Str("hello.txt"),
+            ],
+        );
+
+        eprintln!("C-encoded ({} bytes):", c_bytes.len());
+        for (i, chunk) in c_bytes.chunks(16).enumerate() {
+            eprint!("  {:04x}:", i * 16);
+            for b in chunk { eprint!(" {:02x}", b); }
+            eprintln!();
+        }
+
+        // Try to parse the C-style bytes.
+        let c_parsed = FunctionCall::try_from(c_bytes.as_slice());
+        assert!(c_parsed.is_ok(), "C-encoded FunctionCall should parse: {:?}", c_parsed.err());
+        let c_parsed = c_parsed.unwrap();
+        assert_eq!(c_parsed.function_name, "fs_stat");
+    }
+
+    /// Roundtrip test for fs_write_bytes with empty VecBytes.
+    #[test]
+    fn flatbuffer_generic_encoder_roundtrip_write() {
+        use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
+
+        let c_bytes = build_c_generic_fb(
+            "fs_write_bytes",
+            2,  // HL_FCT_HOST
+            0,  // HL_RT_INT
+            &[
+                CParam::Int(0),          // mount_idx
+                CParam::Str("written.txt"),  // path
+                CParam::ULong(0),        // offset
+                CParam::Int(0),          // append
+                CParam::VecBytes(&[]),   // empty data
+            ],
+        );
+
+        eprintln!("C-encoded fs_write_bytes ({} bytes):", c_bytes.len());
+        for (i, chunk) in c_bytes.chunks(16).enumerate() {
+            eprint!("  {:04x}:", i * 16);
+            for b in chunk { eprint!(" {:02x}", b); }
+            eprintln!();
+        }
+
+        let result = FunctionCall::try_from(c_bytes.as_slice());
+        match &result {
+            Ok(fc) => eprintln!("PARSED: name={}", fc.function_name),
+            Err(e) => eprintln!("FAILED: {:?}", e),
+        }
+        assert!(result.is_ok(), "Should parse: {:?}", result.err());
+    }
+
+    // Helper types and function to replicate fb_encode_generic from hcall.c
+    enum CParam<'a> {
+        Int(i32),
+        Str(&'a str),
+        ULong(u64),
+        VecBytes(&'a [u8]),
+    }
+
+    fn align4(x: usize) -> usize { (x + 3) & !3 }
+    fn align2(x: usize) -> usize { (x + 1) & !1 }
+    /// Smallest value >= x that is congruent to 4 mod 8.
+    /// Ensures u64 field at (result + 4) is 8-byte aligned.
+    fn align8_off4(x: usize) -> usize { ((x + 3) & !7) | 4 }
+
+    fn ew16(buf: &mut [u8], pos: usize, val: u16) {
+        buf[pos] = val as u8;
+        buf[pos + 1] = (val >> 8) as u8;
+    }
+    fn ew32(buf: &mut [u8], pos: usize, val: u32) {
+        buf[pos] = val as u8;
+        buf[pos + 1] = (val >> 8) as u8;
+        buf[pos + 2] = (val >> 16) as u8;
+        buf[pos + 3] = (val >> 24) as u8;
+    }
+    fn ew64(buf: &mut [u8], pos: usize, val: u64) {
+        for i in 0..8 {
+            buf[pos + i] = (val >> (i * 8)) as u8;
+        }
+    }
+
+    fn build_c_generic_fb(name: &str, call_type: u8, ret_type: u8, params: &[CParam]) -> Vec<u8> {
+        let nlen = name.len();
+        let np = params.len();
+
+        const PM_VT_SZ: usize = 8;
+        const PM_TBL_SZ: usize = 12;
+        const VW_SCALAR_VT_SZ: usize = 6;
+        const VW_INT_TBL_SZ: usize = 8;
+        const VW_ULONG_TBL_SZ: usize = 12;
+        const VW_REF_TBL_SZ: usize = 8;
+
+        struct PLay { pvt: usize, ptbl: usize, vvt: usize, vtbl: usize, vdata: usize, vvtsz: usize, vtblsz: usize }
+
+        let mut pos: usize = 36;
+        let pvec = if np > 0 { let v = align4(pos); pos = v + 4 + np * 4; v } else { 0 };
+
+        let mut pl: Vec<PLay> = Vec::new();
+        for i in 0..np {
+            let pvt = align2(pos);
+            let ptbl = align4(pvt + PM_VT_SZ);
+            let (vvtsz, vtblsz) = match &params[i] {
+                CParam::Int(_) => (VW_SCALAR_VT_SZ, VW_INT_TBL_SZ),
+                CParam::ULong(_) => (VW_SCALAR_VT_SZ, VW_ULONG_TBL_SZ),
+                CParam::Str(_) | CParam::VecBytes(_) => (VW_SCALAR_VT_SZ, VW_REF_TBL_SZ),
+            };
+            let vvt = align2(ptbl + PM_TBL_SZ);
+            let vtbl = match &params[i] {
+                CParam::ULong(_) => align8_off4(vvt + vvtsz),
+                _ => align4(vvt + vvtsz),
+            };
+            pos = vtbl + vtblsz;
+            pl.push(PLay { pvt, ptbl, vvt, vtbl, vdata: 0, vvtsz, vtblsz });
+        }
+
+        // Variable-length data
+        for i in 0..np {
+            match &params[i] {
+                CParam::Str(s) => {
+                    pl[i].vdata = align4(pos);
+                    pos = pl[i].vdata + 4 + align4(s.len() + 1);
+                }
+                CParam::VecBytes(v) => {
+                    pl[i].vdata = align4(pos);
+                    let dlen = if v.is_empty() { 1 } else { v.len() };
+                    pos = pl[i].vdata + 4 + align4(dlen);
+                }
+                _ => {}
+            }
+        }
+
+        let fnpos = align4(pos);
+        pos = fnpos + 4 + align4(nlen + 1);
+        let total = pos;
+
+        let mut buf = vec![0u8; total];
+
+        // Size prefix
+        ew32(&mut buf, 0, (total - 4) as u32);
+        // Root offset
+        ew32(&mut buf, 4, 16);
+
+        // Root vtable at 8
+        ew16(&mut buf, 8, 12);
+        ew16(&mut buf, 10, 16);
+        ew16(&mut buf, 12, 4); // VT+4: function_name
+        ew16(&mut buf, 14, if np > 0 { 8 } else { 0 }); // VT+6: parameters
+        ew16(&mut buf, 16, 12); // VT+8: function_call_type
+        ew16(&mut buf, 18, 13); // VT+10: expected_return_type
+
+        // Root table at 20
+        ew32(&mut buf, 20, 12); // soffset → vtable at 8
+        ew32(&mut buf, 24, (fnpos - 24) as u32); // func name uoffset
+        if np > 0 {
+            ew32(&mut buf, 28, (pvec - 28) as u32); // params vector uoffset
+        }
+        buf[32] = call_type;
+        buf[33] = ret_type;
+
+        // Params vector
+        if np > 0 {
+            ew32(&mut buf, pvec, np as u32);
+            for i in 0..np {
+                let ep = pvec + 4 + i * 4;
+                ew32(&mut buf, ep, (pl[i].ptbl - ep) as u32);
+            }
+        }
+
+        // Each parameter
+        for i in 0..np {
+            // Parameter vtable
+            ew16(&mut buf, pl[i].pvt, PM_VT_SZ as u16);
+            ew16(&mut buf, pl[i].pvt + 2, PM_TBL_SZ as u16);
+            ew16(&mut buf, pl[i].pvt + 4, 4);
+            ew16(&mut buf, pl[i].pvt + 6, 8);
+
+            // Parameter table
+            ew32(&mut buf, pl[i].ptbl, (pl[i].ptbl - pl[i].pvt) as u32);
+            let pv_type = match &params[i] {
+                CParam::Int(_) => 1u8, // HL_PV_HLINT
+                CParam::ULong(_) => 4u8, // HL_PV_HLULONG (was incorrectly 5=hlfloat!)
+                CParam::Str(_) => 7u8, // HL_PV_HLSTRING
+                CParam::VecBytes(_) => 9u8, // HL_PV_HLVECBYTES
+            };
+            buf[pl[i].ptbl + 4] = pv_type;
+            ew32(&mut buf, pl[i].ptbl + 8, (pl[i].vtbl - (pl[i].ptbl + 8)) as u32);
+
+            // Value vtable
+            ew16(&mut buf, pl[i].vvt, pl[i].vvtsz as u16);
+            ew16(&mut buf, pl[i].vvt + 2, pl[i].vtblsz as u16);
+            ew16(&mut buf, pl[i].vvt + 4, 4);
+
+            // Value table
+            ew32(&mut buf, pl[i].vtbl, (pl[i].vtbl - pl[i].vvt) as u32);
+
+            match &params[i] {
+                CParam::Int(v) => {
+                    ew32(&mut buf, pl[i].vtbl + 4, *v as u32);
+                }
+                CParam::ULong(v) => {
+                    ew64(&mut buf, pl[i].vtbl + 4, *v);
+                }
+                CParam::Str(s) => {
+                    ew32(&mut buf, pl[i].vtbl + 4, (pl[i].vdata - (pl[i].vtbl + 4)) as u32);
+                    ew32(&mut buf, pl[i].vdata, s.len() as u32);
+                    buf[pl[i].vdata + 4..pl[i].vdata + 4 + s.len()].copy_from_slice(s.as_bytes());
+                }
+                CParam::VecBytes(v) => {
+                    ew32(&mut buf, pl[i].vtbl + 4, (pl[i].vdata - (pl[i].vtbl + 4)) as u32);
+                    ew32(&mut buf, pl[i].vdata, v.len() as u32);
+                    if !v.is_empty() {
+                        buf[pl[i].vdata + 4..pl[i].vdata + 4 + v.len()].copy_from_slice(v);
+                    }
+                }
+            }
+        }
+
+        // Function name string
+        ew32(&mut buf, fnpos, nlen as u32);
+        buf[fnpos + 4..fnpos + 4 + nlen].copy_from_slice(name.as_bytes());
+
+        buf
+    }
+
+    /// Roundtrip test for fs_read_bytes(mount_idx=0, path="test.txt", offset=0, len=32768)
+    /// which uses u64 parameters.
+    #[test]
+    fn flatbuffer_generic_encoder_roundtrip_ulong() {
+        use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
+
+        let c_bytes = build_c_generic_fb(
+            "fs_read_bytes",
+            2,  // HL_FCT_HOST
+            9,  // HL_RT_VECBYTES
+            &[
+                CParam::Int(0),
+                CParam::Str("test.txt"),
+                CParam::ULong(0),
+                CParam::ULong(32768),
+            ],
+        );
+
+        eprintln!("C-encoded fs_read_bytes ({} bytes):", c_bytes.len());
+        for (i, chunk) in c_bytes.chunks(16).enumerate() {
+            eprint!("  {:04x}:", i * 16);
+            for b in chunk { eprint!(" {:02x}", b); }
+            eprintln!();
+        }
+
+        let c_parsed = FunctionCall::try_from(c_bytes.as_slice());
+        assert!(c_parsed.is_ok(), "C-encoded FunctionCall should parse: {:?}", c_parsed.err());
+        let c_parsed = c_parsed.unwrap();
+        assert_eq!(c_parsed.function_name, "fs_read_bytes");
+        assert_eq!(c_parsed.parameters.as_ref().unwrap().len(), 4);
+    }
+
+    /// Verify that the C encoder's ULong discriminant matches HL_PV_HLULONG=4
+    /// (not 5=hlfloat) and that 8-byte alignment is respected.
+    #[test]
+    fn c_encoder_ulong_alignment_check() {
+        use hyperlight_common::flatbuffer_wrappers::function_call::FunctionCall;
+
+        // First, fix the discriminant and test with type=4 (the REAL HL_PV_HLULONG)
+        let c_bytes = build_c_generic_fb(
+            "fs_write_bytes",
+            2,  // HL_FCT_HOST
+            0,  // HL_RT_INT
+            &[
+                CParam::Int(0),
+                CParam::Str("written.txt"),
+                CParam::ULong(0),
+                CParam::Int(0),
+                CParam::VecBytes(&[]),
+            ],
+        );
+
+        eprintln!("C-encoded fs_write_bytes ({} bytes):", c_bytes.len());
+        for (i, chunk) in c_bytes.chunks(16).enumerate() {
+            eprint!("  {:04x}:", i * 16);
+            for b in chunk { eprint!(" {:02x}", b); }
+            eprintln!();
+        }
+
+        let result = FunctionCall::try_from(c_bytes.as_slice());
+        match &result {
+            Ok(fc) => eprintln!("PARSED: name={}", fc.function_name),
+            Err(e) => eprintln!("FAILED: {:?}", e),
+        }
+        assert!(result.is_ok(), "Should parse: {:?}", result.err());
+    }
+
+    #[test]
+    fn fstab_cmdline_multiple_mixed_mounts() {
+        let mounts = vec![
+            Mount::rw("/a", "/mnt/a"),
+            Mount::ro("/b", "/mnt/b"),
+        ];
+        let mut cmdline = "unikraft-hyperlight /entry".to_string();
+        if !mounts.is_empty() {
+            cmdline.push_str(" vfs.fstab=[");
+            for (i, m) in mounts.iter().enumerate() {
+                if i > 0 { cmdline.push(' '); }
+                let flags = if m.readonly { "0x1" } else { "0x0" };
+                std::fmt::Write::write_fmt(
+                    &mut cmdline,
+                    format_args!("{i}:{}:hostfs:{flags}::mkmp", m.guest_path),
+                ).unwrap();
+            }
+            cmdline.push(']');
+        }
+        assert_eq!(
+            cmdline,
+            "unikraft-hyperlight /entry vfs.fstab=[0:/mnt/a:hostfs:0x0::mkmp 1:/mnt/b:hostfs:0x1::mkmp]",
+        );
     }
 }
