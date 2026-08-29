@@ -7,14 +7,14 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use hyperlight_unikraft::{
-    Exec, DEFAULT_SCRATCH_MB, SNAPSHOT_TAG,
+    Exec, Mount, DEFAULT_SCRATCH_MB, SNAPSHOT_TAG,
     create_sandbox, init, restore, run,
     OciTag, Snapshot,
 };
 
 /// Minimal Hyperlight host for Unikraft unikernels.
 #[derive(Parser)]
-#[command(name = "hl-uk-mini")]
+#[command(name = "hluk")]
 struct Cli {
     /// Log level for hluk diagnostics: error, warn, info, debug, trace.
     /// Off by default; pass --log-level info to see timing.
@@ -72,6 +72,15 @@ struct RunArgs {
     /// Inline code to execute (alternative to a script file).
     #[arg(long, conflicts_with = "script")]
     exec: Option<String>,
+
+    /// Mount a host directory into the guest filesystem.
+    /// Format: HOST:GUEST[:ro] (e.g. /tmp/share:/mnt or /data:/mnt/data:ro).
+    #[arg(long = "mount", value_name = "HOST:GUEST[:ro]")]
+    mounts: Vec<String>,
+
+    /// Enable host networking (hostsock).
+    #[arg(long)]
+    net: bool,
 }
 
 /// Arguments for `snapshot save`.
@@ -93,6 +102,15 @@ struct SaveArgs {
     /// Directory to save the snapshot (OCI Image Layout).
     #[arg(short, long)]
     output: PathBuf,
+
+    /// Mount a host directory into the guest filesystem.
+    /// Format: HOST:GUEST[:ro] (e.g. /tmp/share:/mnt or /data:/mnt/data:ro).
+    #[arg(long = "mount", value_name = "HOST:GUEST[:ro]")]
+    mounts: Vec<String>,
+
+    /// Enable host networking (hostsock).
+    #[arg(long)]
+    net: bool,
 }
 
 /// Arguments for `snapshot exec`.
@@ -108,6 +126,15 @@ struct ExecArgs {
     /// Inline code to execute (alternative to a script file).
     #[arg(long, conflicts_with = "script")]
     exec: Option<String>,
+
+    /// Mount a host directory into the guest filesystem.
+    /// Format: HOST:GUEST[:ro] (e.g. /tmp/share:/mnt or /data:/mnt/data:ro).
+    #[arg(long = "mount", value_name = "HOST:GUEST[:ro]")]
+    mounts: Vec<String>,
+
+    /// Enable host networking (hostsock).
+    #[arg(long)]
+    net: bool,
 }
 
 #[derive(Subcommand)]
@@ -179,10 +206,54 @@ struct BenchParallelArgs {
     iterations: usize,
 }
 
+// ── Helpers ──────────────────────────────────────────────────────
+
+/// Parse `--mount HOST:GUEST[:ro]` strings into [`Mount`] values.
+///
+/// Handles Windows drive-letter paths (e.g. `C:\data:/mnt:ro`) by
+/// treating a single ASCII letter followed by `:\` as part of the
+/// host path rather than a separator.
+fn parse_mounts(raw: &[String]) -> Vec<Mount> {
+    raw.iter()
+        .filter_map(|m| {
+            // On Windows, "C:\foo:/mnt" would split wrong at the drive
+            // letter colon.  Detect "X:\" prefix and split after it.
+            let (host, rest) = if m.len() >= 3
+                && m.as_bytes()[0].is_ascii_alphabetic()
+                && m.as_bytes()[1] == b':'
+                && (m.as_bytes()[2] == b'\\' || m.as_bytes()[2] == b'/')
+            {
+                // Drive-letter prefix — split at the NEXT colon.
+                let after_drive = &m[2..];
+                let colon = after_drive.find(':')?;
+                (&m[..2 + colon], &after_drive[colon + 1..])
+            } else {
+                m.split_once(':')?
+            };
+            let (guest, readonly) = match rest.rsplit_once(':') {
+                Some((g, "ro")) => (g, true),
+                _ => (rest, false),
+            };
+            Some(Mount {
+                host_path: PathBuf::from(host),
+                guest_path: guest.to_string(),
+                readonly,
+            })
+        })
+        .collect()
+}
+
 // ── Commands ─────────────────────────────────────────────────────
 
 fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
-    let (usandbox, _config) = create_sandbox(&args.initrd, &args.entry, args.scratch_mb)?;
+    let mounts = parse_mounts(&args.mounts);
+    let (usandbox, _config) = create_sandbox(
+        &args.initrd,
+        &args.entry,
+        args.scratch_mb,
+        mounts,
+        args.net,
+    )?;
 
     let t = Instant::now();
     let mut sandbox = init(usandbox)?;
@@ -202,7 +273,14 @@ fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
 }
 
 fn cmd_snapshot_save(args: SaveArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
-    let (usandbox, _config) = create_sandbox(&args.initrd, &args.entry, args.scratch_mb)?;
+    let mounts = parse_mounts(&args.mounts);
+    let (usandbox, _config) = create_sandbox(
+        &args.initrd,
+        &args.entry,
+        args.scratch_mb,
+        mounts,
+        args.net,
+    )?;
     let mut sandbox = init(usandbox)?;
 
     let t = Instant::now();
@@ -230,6 +308,7 @@ fn cmd_snapshot_exec(
     args: ExecArgs,
 ) -> hyperlight_unikraft::hyperlight_host::Result<()> {
     let tag: OciTag = SNAPSHOT_TAG.parse().expect("valid OCI tag");
+    let mounts = parse_mounts(&args.mounts);
 
     let t = Instant::now();
     let snap: Arc<Snapshot> = Arc::new(Snapshot::load(&args.snapshot, tag)?);
@@ -240,7 +319,7 @@ fn cmd_snapshot_exec(
     );
 
     let t = Instant::now();
-    let mut sandbox = restore(snap)?;
+    let (mut sandbox, _config) = restore(snap, mounts, args.net)?;
     info!(
         elapsed_ms = t.elapsed().as_secs_f64() * 1000.0,
         "restored from snapshot",
@@ -348,7 +427,7 @@ fn bench_cold(args: BenchColdArgs) -> hyperlight_unikraft::hyperlight_host::Resu
 
     for i in 0..args.samples {
         let t0 = Instant::now();
-        let (usandbox, _) = create_sandbox(&Some(args.initrd.clone()), &None, args.scratch_mb)?;
+        let (usandbox, _) = create_sandbox(&Some(args.initrd.clone()), &None, args.scratch_mb, Vec::new(), false)?;
         let mut sandbox = init(usandbox)?;
         let boot_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
@@ -387,7 +466,7 @@ fn bench_cold_snap(args: BenchSnapArgs) -> hyperlight_unikraft::hyperlight_host:
         let load_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
         let t1 = Instant::now();
-        let mut sandbox = restore(snap)?;
+        let (mut sandbox, _config) = restore(snap, Vec::new(), false)?;
         let restore_ms = t1.elapsed().as_secs_f64() * 1000.0;
 
         let t2 = Instant::now();
@@ -421,7 +500,7 @@ fn bench_warm_restore(args: BenchSnapArgs) -> hyperlight_unikraft::hyperlight_ho
 
     let t0 = Instant::now();
     let snap = Arc::new(Snapshot::load(&args.snapshot, tag)?);
-    let mut sandbox = restore(snap.clone())?;
+    let (mut sandbox, _config) = restore(snap.clone(), Vec::new(), false)?;
     let setup_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!("BENCH warm-restore setup_ms={setup_ms:.3}");
 
@@ -458,7 +537,7 @@ fn bench_warm_stateful(args: BenchSnapArgs) -> hyperlight_unikraft::hyperlight_h
 
     let t0 = Instant::now();
     let snap = Arc::new(Snapshot::load(&args.snapshot, tag)?);
-    let mut sandbox = restore(snap)?;
+    let (mut sandbox, _config) = restore(snap, Vec::new(), false)?;
     let setup_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!("BENCH warm-stateful setup_ms={setup_ms:.3}");
 
@@ -500,7 +579,7 @@ fn bench_parallel(args: BenchParallelArgs) -> hyperlight_unikraft::hyperlight_ho
                 barrier.wait();
                 let vm_start = Instant::now();
 
-                let mut sandbox = restore(snap.clone()).map_err(|e| e.to_string())?;
+                let (mut sandbox, _config) = restore(snap.clone(), Vec::new(), false).map_err(|e| e.to_string())?;
                 let mut execs = Vec::with_capacity(iterations);
 
                 for iter in 0..iterations {
@@ -591,5 +670,71 @@ fn main() -> hyperlight_unikraft::hyperlight_host::Result<()> {
             BenchCommand::WarmStateful(args) => bench_warm_stateful(args),
             BenchCommand::Parallel(args) => bench_parallel(args),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_unix_rw_mount() {
+        let mounts = parse_mounts(&["/tmp/share:/mnt/host".into()]);
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].host_path, PathBuf::from("/tmp/share"));
+        assert_eq!(mounts[0].guest_path, "/mnt/host");
+        assert!(!mounts[0].readonly);
+    }
+
+    #[test]
+    fn parse_unix_ro_mount() {
+        let mounts = parse_mounts(&["/data:/mnt/data:ro".into()]);
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].host_path, PathBuf::from("/data"));
+        assert_eq!(mounts[0].guest_path, "/mnt/data");
+        assert!(mounts[0].readonly);
+    }
+
+    #[test]
+    fn parse_multiple_mounts() {
+        let mounts = parse_mounts(&[
+            "/a:/mnt/a".into(),
+            "/b:/mnt/b:ro".into(),
+        ]);
+        assert_eq!(mounts.len(), 2);
+        assert!(!mounts[0].readonly);
+        assert!(mounts[1].readonly);
+    }
+
+    #[test]
+    fn parse_windows_drive_rw() {
+        let mounts = parse_mounts(&[r"C:\Users\data:/mnt/data".into()]);
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].host_path, PathBuf::from(r"C:\Users\data"));
+        assert_eq!(mounts[0].guest_path, "/mnt/data");
+        assert!(!mounts[0].readonly);
+    }
+
+    #[test]
+    fn parse_windows_drive_ro() {
+        let mounts = parse_mounts(&[r"D:\share:/mnt/host:ro".into()]);
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].host_path, PathBuf::from(r"D:\share"));
+        assert_eq!(mounts[0].guest_path, "/mnt/host");
+        assert!(mounts[0].readonly);
+    }
+
+    #[test]
+    fn parse_relative_path() {
+        let mounts = parse_mounts(&["./data:/mnt".into()]);
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].host_path, PathBuf::from("./data"));
+        assert_eq!(mounts[0].guest_path, "/mnt");
+    }
+
+    #[test]
+    fn parse_invalid_no_colon() {
+        let mounts = parse_mounts(&["invalid".into()]);
+        assert!(mounts.is_empty());
     }
 }
