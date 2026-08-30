@@ -84,7 +84,7 @@ pub(crate) fn register(
             "fs_stat",
             move |mount_idx: i32, path: String| -> hyperlight_host::Result<Vec<u8>> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok((-libc::EINVAL as i32).to_le_bytes().to_vec());
+                    return Ok({ -libc::EINVAL }.to_le_bytes().to_vec());
                 };
                 // Empty path = stat the mount root itself.
                 let meta = if path.is_empty() {
@@ -125,17 +125,16 @@ pub(crate) fn register(
                   len: u64|
                   -> hyperlight_host::Result<Vec<u8>> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok((-libc::EINVAL as i32).to_le_bytes().to_vec());
+                    return Ok({ -libc::EINVAL }.to_le_bytes().to_vec());
                 };
                 let len = (len.min(CHUNK as u64) as usize).max(1);
 
                 Ok(match d.open(&path) {
                     Ok(mut file) => {
-                        if offset > 0 {
-                            if let Err(e) = file.seek(SeekFrom::Start(offset)) {
+                        if offset > 0
+                            && let Err(e) = file.seek(SeekFrom::Start(offset)) {
                                 return Ok(errno_vec(e));
                             }
-                        }
                         let mut buf = vec![0u8; 4 + len];
                         match file.read(&mut buf[4..]) {
                             Ok(n) => {
@@ -280,7 +279,7 @@ pub(crate) fn register(
             "fs_list",
             move |mount_idx: i32, path: String| -> hyperlight_host::Result<Vec<u8>> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok((-libc::EINVAL as i32).to_le_bytes().to_vec());
+                    return Ok({ -libc::EINVAL }.to_le_bytes().to_vec());
                 };
                 let path = if path.is_empty() { ".".to_string() } else { path };
                 Ok(match d.read_dir(&path) {
@@ -372,7 +371,7 @@ pub(crate) fn register(
             "fs_readlink",
             move |mount_idx: i32, path: String| -> hyperlight_host::Result<Vec<u8>> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok((-libc::EINVAL as i32).to_le_bytes().to_vec());
+                    return Ok({ -libc::EINVAL }.to_le_bytes().to_vec());
                 };
                 Ok(match d.read_link(&path) {
                     Ok(target_path) => {
