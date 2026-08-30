@@ -7,7 +7,8 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use hyperlight_unikraft::{
-    Exec, Mount, DEFAULT_SCRATCH_MB, SNAPSHOT_TAG,
+    AllowList, BlockList, Exec, ListenPorts, Mount, NetworkPolicy,
+    DEFAULT_SCRATCH_MB, SNAPSHOT_TAG,
     create_sandbox, init, restore, run,
     OciTag, Snapshot,
 };
@@ -78,9 +79,24 @@ struct RunArgs {
     #[arg(long = "mount", value_name = "HOST:GUEST[:ro]")]
     mounts: Vec<String>,
 
-    /// Enable host networking (hostsock).
-    #[arg(long)]
+    /// Enable host networking with no policy (all destinations allowed).
+    #[arg(long, conflicts_with_all = ["net_allow", "net_block"])]
     net: bool,
+
+    /// Allow-list: only permit connections to these hosts/IPs.
+    /// Implies --net. Mutually exclusive with --net-block.
+    #[arg(long = "net-allow", value_name = "HOST", conflicts_with = "net_block")]
+    net_allow: Vec<String>,
+
+    /// Block-list: deny connections to these hosts/IPs, allow everything else.
+    /// Implies --net. Mutually exclusive with --net-allow.
+    #[arg(long = "net-block", value_name = "HOST", conflicts_with = "net_allow")]
+    net_block: Vec<String>,
+
+    /// Ports the guest may bind to for inbound connections.
+    /// Without this flag, bind() is rejected (outbound-only).
+    #[arg(long = "port", value_name = "PORT")]
+    ports: Vec<u16>,
 }
 
 /// Arguments for `snapshot save`.
@@ -108,9 +124,21 @@ struct SaveArgs {
     #[arg(long = "mount", value_name = "HOST:GUEST[:ro]")]
     mounts: Vec<String>,
 
-    /// Enable host networking (hostsock).
-    #[arg(long)]
+    /// Enable host networking with no policy (all destinations allowed).
+    #[arg(long, conflicts_with_all = ["net_allow", "net_block"])]
     net: bool,
+
+    /// Allow-list: only permit connections to these hosts/IPs.
+    #[arg(long = "net-allow", value_name = "HOST", conflicts_with = "net_block")]
+    net_allow: Vec<String>,
+
+    /// Block-list: deny connections to these hosts/IPs, allow everything else.
+    #[arg(long = "net-block", value_name = "HOST", conflicts_with = "net_allow")]
+    net_block: Vec<String>,
+
+    /// Ports the guest may bind to for inbound connections.
+    #[arg(long = "port", value_name = "PORT")]
+    ports: Vec<u16>,
 }
 
 /// Arguments for `snapshot exec`.
@@ -132,9 +160,21 @@ struct ExecArgs {
     #[arg(long = "mount", value_name = "HOST:GUEST[:ro]")]
     mounts: Vec<String>,
 
-    /// Enable host networking (hostsock).
-    #[arg(long)]
+    /// Enable host networking with no policy (all destinations allowed).
+    #[arg(long, conflicts_with_all = ["net_allow", "net_block"])]
     net: bool,
+
+    /// Allow-list: only permit connections to these hosts/IPs.
+    #[arg(long = "net-allow", value_name = "HOST", conflicts_with = "net_block")]
+    net_allow: Vec<String>,
+
+    /// Block-list: deny connections to these hosts/IPs, allow everything else.
+    #[arg(long = "net-block", value_name = "HOST", conflicts_with = "net_allow")]
+    net_block: Vec<String>,
+
+    /// Ports the guest may bind to for inbound connections.
+    #[arg(long = "port", value_name = "PORT")]
+    ports: Vec<u16>,
 }
 
 #[derive(Subcommand)]
@@ -243,16 +283,44 @@ fn parse_mounts(raw: &[String]) -> Vec<Mount> {
         .collect()
 }
 
+/// Convert CLI net flags into `(Option<NetworkPolicy>, Option<ListenPorts>)`.
+fn parse_net_policy(
+    net: bool,
+    net_allow: &[String],
+    net_block: &[String],
+    ports: &[u16],
+) -> Result<(Option<NetworkPolicy>, Option<ListenPorts>), String> {
+    let policy = if !net_allow.is_empty() {
+        Some(NetworkPolicy::AllowList(AllowList::from_hosts(net_allow)?))
+    } else if !net_block.is_empty() {
+        Some(NetworkPolicy::BlockList(BlockList::from_hosts(net_block)?))
+    } else if net {
+        Some(NetworkPolicy::AllowAll)
+    } else {
+        None
+    };
+    let listen = if !ports.is_empty() {
+        Some(ListenPorts::from_ports(ports.iter().copied()))
+    } else {
+        None
+    };
+    Ok((policy, listen))
+}
+
 // ── Commands ─────────────────────────────────────────────────────
 
 fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
     let mounts = parse_mounts(&args.mounts);
+    let (policy, listen) =
+        parse_net_policy(args.net, &args.net_allow, &args.net_block, &args.ports)
+            .map_err(hyperlight_unikraft::hyperlight_host::HyperlightError::Error)?;
     let (usandbox, _config) = create_sandbox(
         &args.initrd,
         &args.entry,
         args.scratch_mb,
         mounts,
-        args.net,
+        policy,
+        listen,
     )?;
 
     let t = Instant::now();
@@ -274,12 +342,16 @@ fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
 
 fn cmd_snapshot_save(args: SaveArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
     let mounts = parse_mounts(&args.mounts);
+    let (policy, listen) =
+        parse_net_policy(args.net, &args.net_allow, &args.net_block, &args.ports)
+            .map_err(hyperlight_unikraft::hyperlight_host::HyperlightError::Error)?;
     let (usandbox, _config) = create_sandbox(
         &args.initrd,
         &args.entry,
         args.scratch_mb,
         mounts,
-        args.net,
+        policy,
+        listen,
     )?;
     let mut sandbox = init(usandbox)?;
 
@@ -309,6 +381,9 @@ fn cmd_snapshot_exec(
 ) -> hyperlight_unikraft::hyperlight_host::Result<()> {
     let tag: OciTag = SNAPSHOT_TAG.parse().expect("valid OCI tag");
     let mounts = parse_mounts(&args.mounts);
+    let (policy, listen) =
+        parse_net_policy(args.net, &args.net_allow, &args.net_block, &args.ports)
+            .map_err(hyperlight_unikraft::hyperlight_host::HyperlightError::Error)?;
 
     let t = Instant::now();
     let snap: Arc<Snapshot> = Arc::new(Snapshot::load(&args.snapshot, tag)?);
@@ -319,7 +394,7 @@ fn cmd_snapshot_exec(
     );
 
     let t = Instant::now();
-    let (mut sandbox, _config) = restore(snap, mounts, args.net)?;
+    let (mut sandbox, _config) = restore(snap, mounts, policy, listen)?;
     info!(
         elapsed_ms = t.elapsed().as_secs_f64() * 1000.0,
         "restored from snapshot",
@@ -401,8 +476,8 @@ fn print_snapshot_size(label: &str, snap_dir: &std::path::Path) {
 /// Closest analog to Windows' PrivateMemorySize64.
 fn print_rss(label: &str) {
     #[cfg(target_os = "linux")]
-    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-        if let Some(kb) = status
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status")
+        && let Some(kb) = status
             .lines()
             .find(|l| l.starts_with("RssAnon:"))
             .and_then(|l| l.split_whitespace().nth(1))
@@ -410,7 +485,6 @@ fn print_rss(label: &str) {
         {
             println!("BENCH {label} rss_mb={}", kb / 1024);
         }
-    }
     // TODO: Windows — use GetProcessMemoryInfo for PrivateUsage
     #[cfg(not(target_os = "linux"))]
     let _ = label;
@@ -427,7 +501,7 @@ fn bench_cold(args: BenchColdArgs) -> hyperlight_unikraft::hyperlight_host::Resu
 
     for i in 0..args.samples {
         let t0 = Instant::now();
-        let (usandbox, _) = create_sandbox(&Some(args.initrd.clone()), &None, args.scratch_mb, Vec::new(), false)?;
+        let (usandbox, _) = create_sandbox(&Some(args.initrd.clone()), &None, args.scratch_mb, Vec::new(), None, None)?;
         let mut sandbox = init(usandbox)?;
         let boot_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
@@ -466,7 +540,7 @@ fn bench_cold_snap(args: BenchSnapArgs) -> hyperlight_unikraft::hyperlight_host:
         let load_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
         let t1 = Instant::now();
-        let (mut sandbox, _config) = restore(snap, Vec::new(), false)?;
+        let (mut sandbox, _config) = restore(snap, Vec::new(), None, None)?;
         let restore_ms = t1.elapsed().as_secs_f64() * 1000.0;
 
         let t2 = Instant::now();
@@ -500,7 +574,7 @@ fn bench_warm_restore(args: BenchSnapArgs) -> hyperlight_unikraft::hyperlight_ho
 
     let t0 = Instant::now();
     let snap = Arc::new(Snapshot::load(&args.snapshot, tag)?);
-    let (mut sandbox, _config) = restore(snap.clone(), Vec::new(), false)?;
+    let (mut sandbox, _config) = restore(snap.clone(), Vec::new(), None, None)?;
     let setup_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!("BENCH warm-restore setup_ms={setup_ms:.3}");
 
@@ -537,7 +611,7 @@ fn bench_warm_stateful(args: BenchSnapArgs) -> hyperlight_unikraft::hyperlight_h
 
     let t0 = Instant::now();
     let snap = Arc::new(Snapshot::load(&args.snapshot, tag)?);
-    let (mut sandbox, _config) = restore(snap, Vec::new(), false)?;
+    let (mut sandbox, _config) = restore(snap, Vec::new(), None, None)?;
     let setup_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!("BENCH warm-stateful setup_ms={setup_ms:.3}");
 
@@ -579,7 +653,7 @@ fn bench_parallel(args: BenchParallelArgs) -> hyperlight_unikraft::hyperlight_ho
                 barrier.wait();
                 let vm_start = Instant::now();
 
-                let (mut sandbox, _config) = restore(snap.clone(), Vec::new(), false).map_err(|e| e.to_string())?;
+                let (mut sandbox, _config) = restore(snap.clone(), Vec::new(), None, None).map_err(|e| e.to_string())?;
                 let mut execs = Vec::with_capacity(iterations);
 
                 for iter in 0..iterations {
