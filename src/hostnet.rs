@@ -20,6 +20,8 @@ use std::sync::{Arc, Mutex};
 use hyperlight_host::func::Registerable;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
+use crate::net_policy::{self, ListenPorts, NetworkPolicy};
+
 const MAX_SOCKETS: usize = 1024;
 
 // ── SocketTable ──────────────────────────────────────────────────────
@@ -65,17 +67,26 @@ fn lock(t: &Table) -> std::sync::MutexGuard<'_, SocketTable> {
 // ── Registration ─────────────────────────────────────────────────────
 
 /// Register all `net_*` host functions plus `net_resolve` for DNS.
-pub(crate) fn register(target: &mut impl Registerable) -> hyperlight_host::Result<()> {
+///
+/// `policy` controls which outbound destinations are allowed.
+/// `listen_ports` controls which ports `net_bind` accepts.
+pub(crate) fn register(
+    target: &mut impl Registerable,
+    policy: Option<NetworkPolicy>,
+    listen_ports: Option<ListenPorts>,
+) -> hyperlight_host::Result<()> {
     let table: Table = Arc::new(Mutex::new(SocketTable::new()));
+    let policy = policy.map(Arc::new);
+    let listen_ports = listen_ports.map(Arc::new);
 
     reg_socket(target, &table)?;
-    reg_bind(target, &table)?;
+    reg_bind(target, &table, &listen_ports)?;
     reg_listen(target, &table)?;
     reg_accept(target, &table)?;
-    reg_connect(target, &table)?;
+    reg_connect(target, &table, &policy)?;
     reg_send(target, &table)?;
-    reg_sendto(target, &table)?;
-    reg_recvfrom(target, &table)?;
+    reg_sendto(target, &table, &policy)?;
+    reg_recvfrom(target, &table, &policy)?;
     reg_shutdown(target, &table)?;
     reg_close(target, &table)?;
     reg_getpeername(target, &table)?;
@@ -128,8 +139,13 @@ fn reg_socket(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
 }
 
 /// `net_bind(fd, family, addr, port) -> 0 or -errno`
-fn reg_bind(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result<()> {
+fn reg_bind(
+    t: &mut impl Registerable,
+    table: &Table,
+    listen_ports: &Option<Arc<ListenPorts>>,
+) -> hyperlight_host::Result<()> {
     let tbl = table.clone();
+    let lp = listen_ports.clone();
     t.register_host_function(
         "net_bind",
         move |fd: i32,
@@ -141,6 +157,13 @@ fn reg_bind(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
                 Some(a) => a,
                 None => return Ok(-libc::EINVAL),
             };
+            // Enforce listen-port allowlist (skip for port 0 = ephemeral).
+            if sa.port() != 0
+                && let Some(ref lp) = lp
+                && lp.check(sa.port()).is_err()
+            {
+                return Ok(-libc::EACCES);
+            }
             let tbl = lock(&tbl);
             match tbl.get(fd) {
                 Some(sock) => Ok(match sock.bind(&SockAddr::from(sa)) {
@@ -192,7 +215,7 @@ fn reg_accept(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
                         Ok(s) => s,
                         Err(e) => return Ok(errno_vec(e)),
                     },
-                    None => return Ok((-libc::EBADF as i32).to_le_bytes().to_vec()),
+                    None => return Ok({ -libc::EBADF }.to_le_bytes().to_vec()),
                 }
             };
             // Lock is released — safe to block on accept.
@@ -204,7 +227,7 @@ fn reg_accept(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
                 let mut tbl_guard = lock(&tbl);
                 match tbl_guard.insert(new_sock) {
                     Ok(fd) => fd,
-                    Err(e) => return Ok((-e as i32).to_le_bytes().to_vec()),
+                    Err(e) => return Ok({ -e }.to_le_bytes().to_vec()),
                 }
             };
             let mut buf = Vec::with_capacity(32);
@@ -218,8 +241,13 @@ fn reg_accept(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
 }
 
 /// `net_connect(fd, family, addr, port) -> 0 or -errno`
-fn reg_connect(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result<()> {
+fn reg_connect(
+    t: &mut impl Registerable,
+    table: &Table,
+    policy: &Option<Arc<NetworkPolicy>>,
+) -> hyperlight_host::Result<()> {
     let tbl = table.clone();
+    let pol = policy.clone();
     t.register_host_function(
         "net_connect",
         move |fd: i32,
@@ -231,6 +259,12 @@ fn reg_connect(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Res
                 Some(a) => a,
                 None => return Ok(-libc::EINVAL),
             };
+            // Enforce network policy.
+            if let Some(ref pol) = pol
+                && pol.check(&sa).is_err()
+            {
+                return Ok(-libc::EACCES);
+            }
             let tbl = lock(&tbl);
             match tbl.get(fd) {
                 Some(sock) => Ok(match sock.connect(&SockAddr::from(sa)) {
@@ -264,8 +298,13 @@ fn reg_send(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
 }
 
 /// `net_sendto(fd, data, family, addr, port) -> bytes_sent or -errno`
-fn reg_sendto(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result<()> {
+fn reg_sendto(
+    t: &mut impl Registerable,
+    table: &Table,
+    policy: &Option<Arc<NetworkPolicy>>,
+) -> hyperlight_host::Result<()> {
     let tbl = table.clone();
+    let pol = policy.clone();
     t.register_host_function(
         "net_sendto",
         move |fd: i32,
@@ -278,6 +317,12 @@ fn reg_sendto(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
                 Some(a) => a,
                 None => return Ok(-libc::EINVAL),
             };
+            // Enforce network policy.
+            if let Some(ref pol) = pol
+                && pol.check(&sa).is_err()
+            {
+                return Ok(-libc::EACCES);
+            }
             let tbl = lock(&tbl);
             match tbl.get(fd) {
                 Some(sock) => Ok(match sock.send_to(&data, &SockAddr::from(sa)) {
@@ -299,8 +344,13 @@ fn reg_sendto(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
 ///   [10]    u8   addr_len
 ///   [11..11+addr_len] addr bytes
 ///   [11+addr_len..]   received data
-fn reg_recvfrom(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result<()> {
+fn reg_recvfrom(
+    t: &mut impl Registerable,
+    table: &Table,
+    policy: &Option<Arc<NetworkPolicy>>,
+) -> hyperlight_host::Result<()> {
     let tbl = table.clone();
+    let pol = policy.clone();
     t.register_host_function(
         "net_recvfrom",
         move |fd: i32, len: i32| -> hyperlight_host::Result<Vec<u8>> {
@@ -313,7 +363,7 @@ fn reg_recvfrom(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Re
                         Ok(s) => s,
                         Err(e) => return Ok(errno_vec(e)),
                     },
-                    None => return Ok((-libc::EBADF as i32).to_le_bytes().to_vec()),
+                    None => return Ok({ -libc::EBADF }.to_le_bytes().to_vec()),
                 }
             };
             // Lock is released — safe to block on recv.
@@ -324,6 +374,16 @@ fn reg_recvfrom(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Re
                         .iter()
                         .map(|b| unsafe { b.assume_init() })
                         .collect();
+
+                    // Learn IPs from DNS responses when using AllowList.
+                    if let Some(ref pol) = pol
+                        && let NetworkPolicy::AllowList(ref al) = **pol
+                        && let Some(sa) = src_addr.as_socket()
+                        && sa.port() == 53
+                    {
+                        net_policy::learn_ips_from_dns_response(&data, al);
+                    }
+
                     let mut buf = Vec::with_capacity(16 + n);
                     buf.extend((n as i32).to_le_bytes());
                     if let Some(sa) = src_addr.as_socket() {
@@ -394,7 +454,7 @@ fn reg_getpeername(t: &mut impl Registerable, table: &Table) -> hyperlight_host:
                     Ok(a) => Ok(addr_result(&a)),
                     Err(e) => Ok(errno_vec(e)),
                 },
-                None => Ok((-libc::EBADF as i32).to_le_bytes().to_vec()),
+                None => Ok({ -libc::EBADF }.to_le_bytes().to_vec()),
             }
         },
     )
@@ -412,7 +472,7 @@ fn reg_getsockname(t: &mut impl Registerable, table: &Table) -> hyperlight_host:
                     Ok(a) => Ok(addr_result(&a)),
                     Err(e) => Ok(errno_vec(e)),
                 },
-                None => Ok((-libc::EBADF as i32).to_le_bytes().to_vec()),
+                None => Ok({ -libc::EBADF }.to_le_bytes().to_vec()),
             }
         },
     )
@@ -636,7 +696,7 @@ fn addr_result(sa: &SockAddr) -> Vec<u8> {
             pack_addr(&mut buf, &addr);
             buf
         }
-        None => (-libc::EAFNOSUPPORT as i32).to_le_bytes().to_vec(),
+        None => { -libc::EAFNOSUPPORT }.to_le_bytes().to_vec(),
     }
 }
 
