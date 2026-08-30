@@ -10,7 +10,8 @@
 //!     &None,
 //!     256,
 //!     Vec::new(),
-//!     false,
+//!     None,
+//!     None,
 //! )?;
 //! let mut sandbox = init(usandbox)?;
 //! run(&mut sandbox, "print('hello')")?;
@@ -40,6 +41,9 @@ use tracing::{debug, info};
 
 mod hostfs;
 mod hostnet;
+pub mod net_policy;
+
+pub use net_policy::{AllowList, BlockList, ListenPorts, NetworkPolicy};
 
 // ── Constants ───────────────────────────────────────────────────────────
 
@@ -125,8 +129,10 @@ pub struct GuestConfig {
     pub initrd_size: u64,
     /// Host filesystem mounts.
     pub mounts: Vec<Mount>,
-    /// Enable host networking (hostsock).
-    pub net: bool,
+    /// Network access policy (`None` = networking disabled).
+    pub network: Option<NetworkPolicy>,
+    /// Ports the guest is allowed to `bind()` for inbound connections.
+    pub listen_ports: Option<ListenPorts>,
     /// Captured guest stdout — accumulated by the HostPrint callback.
     output: Arc<Mutex<String>>,
 }
@@ -226,8 +232,12 @@ impl GuestConfig {
                 .collect();
             hostfs::register(target, &hfs_mounts)?;
         }
-        if self.net {
-            hostnet::register(target)?;
+        if self.network.is_some() {
+            hostnet::register(
+                target,
+                self.network.clone(),
+                self.listen_ports.clone(),
+            )?;
         }
 
         Ok(())
@@ -300,12 +310,11 @@ fn resolve_entry(entry: &Option<String>, initrd: &Option<PathBuf>) -> Option<Str
     if let Some(e) = entry {
         return Some(e.clone());
     }
-    if let Some(path) = initrd {
-        if let Some(detected) = find_cpio_entry(path) {
+    if let Some(path) = initrd
+        && let Some(detected) = find_cpio_entry(path) {
             info!(entry = %detected, "auto-detected driver entry point");
             return Some(detected);
         }
-    }
     None
 }
 
@@ -321,7 +330,8 @@ pub fn create_sandbox(
     entry: &Option<String>,
     scratch_mb: usize,
     mounts: Vec<Mount>,
-    net: bool,
+    network: Option<NetworkPolicy>,
+    listen_ports: Option<ListenPorts>,
 ) -> hyperlight_host::Result<(UninitializedSandbox, GuestConfig)> {
     let scratch_size = scratch_mb * 1024 * 1024;
     let mut cfg = SandboxConfiguration::default();
@@ -397,7 +407,8 @@ pub fn create_sandbox(
         initrd_base,
         initrd_size,
         mounts,
-        net,
+        network,
+        listen_ports,
         output: Arc::new(Mutex::new(String::new())),
     };
 
@@ -481,7 +492,8 @@ pub fn run(
 pub fn restore(
     snapshot: Arc<Snapshot>,
     mounts: Vec<Mount>,
-    net: bool,
+    network: Option<NetworkPolicy>,
+    listen_ports: Option<ListenPorts>,
 ) -> hyperlight_host::Result<(MultiUseSandbox, GuestConfig)> {
     if mounts.is_empty() {
         debug!("restore: no mounts provided — if the snapshot was saved with mounts, hostfs operations will fail");
@@ -492,7 +504,8 @@ pub fn restore(
         initrd_base: 0,
         initrd_size: 0,
         mounts,
-        net,
+        network,
+        listen_ports,
         output: Arc::new(Mutex::new(String::new())),
     };
     let mut hf = HostFunctions::default();
@@ -516,7 +529,8 @@ mod tests {
             initrd_base: 0,
             initrd_size: 0,
             mounts: Vec::new(),
-            net: false,
+            network: None,
+            listen_ports: None,
             output: Arc::new(Mutex::new(String::new())),
         };
         assert_eq!(cfg.paging_budget(), 192 * 1024 * 1024);
@@ -566,10 +580,10 @@ mod tests {
         buf.extend_from_slice(name.as_bytes());
         buf.push(0);
         let name_pad = (4 - ((110 + namesize) % 4)) % 4;
-        buf.extend(std::iter::repeat(0u8).take(name_pad));
+        buf.extend(std::iter::repeat_n(0u8, name_pad));
         buf.extend_from_slice(data);
         let data_pad = (4 - (filesize % 4)) % 4;
-        buf.extend(std::iter::repeat(0u8).take(data_pad));
+        buf.extend(std::iter::repeat_n(0u8, data_pad));
         buf
     }
 
@@ -669,7 +683,7 @@ mod tests {
 
     #[test]
     fn fstab_cmdline_single_rw_mount() {
-        let mounts = vec![Mount::rw("/tmp/share", "/mnt/host")];
+        let mounts = [Mount::rw("/tmp/share", "/mnt/host")];
         let mut cmdline = "unikraft-hyperlight /entry".to_string();
         if !mounts.is_empty() {
             cmdline.push_str(" vfs.fstab=[");
@@ -803,16 +817,16 @@ mod tests {
         let pvec = if np > 0 { let v = align4(pos); pos = v + 4 + np * 4; v } else { 0 };
 
         let mut pl: Vec<PLay> = Vec::new();
-        for i in 0..np {
+        for param in params.iter().take(np) {
             let pvt = align2(pos);
             let ptbl = align4(pvt + PM_VT_SZ);
-            let (vvtsz, vtblsz) = match &params[i] {
+            let (vvtsz, vtblsz) = match param {
                 CParam::Int(_) => (VW_SCALAR_VT_SZ, VW_INT_TBL_SZ),
                 CParam::ULong(_) => (VW_SCALAR_VT_SZ, VW_ULONG_TBL_SZ),
                 CParam::Str(_) | CParam::VecBytes(_) => (VW_SCALAR_VT_SZ, VW_REF_TBL_SZ),
             };
             let vvt = align2(ptbl + PM_TBL_SZ);
-            let vtbl = match &params[i] {
+            let vtbl = match param {
                 CParam::ULong(_) => align8_off4(vvt + vvtsz),
                 _ => align4(vvt + vvtsz),
             };
@@ -821,8 +835,8 @@ mod tests {
         }
 
         // Variable-length data
-        for i in 0..np {
-            match &params[i] {
+        for (i, param) in params.iter().enumerate().take(np) {
+            match param {
                 CParam::Str(s) => {
                     pl[i].vdata = align4(pos);
                     pos = pl[i].vdata + 4 + align4(s.len() + 1);
@@ -867,56 +881,56 @@ mod tests {
         // Params vector
         if np > 0 {
             ew32(&mut buf, pvec, np as u32);
-            for i in 0..np {
+            for (i, layout) in pl.iter().enumerate().take(np) {
                 let ep = pvec + 4 + i * 4;
-                ew32(&mut buf, ep, (pl[i].ptbl - ep) as u32);
+                ew32(&mut buf, ep, (layout.ptbl - ep) as u32);
             }
         }
 
         // Each parameter
-        for i in 0..np {
+        for (param, layout) in params.iter().zip(pl.iter()).take(np) {
             // Parameter vtable
-            ew16(&mut buf, pl[i].pvt, PM_VT_SZ as u16);
-            ew16(&mut buf, pl[i].pvt + 2, PM_TBL_SZ as u16);
-            ew16(&mut buf, pl[i].pvt + 4, 4);
-            ew16(&mut buf, pl[i].pvt + 6, 8);
+            ew16(&mut buf, layout.pvt, PM_VT_SZ as u16);
+            ew16(&mut buf, layout.pvt + 2, PM_TBL_SZ as u16);
+            ew16(&mut buf, layout.pvt + 4, 4);
+            ew16(&mut buf, layout.pvt + 6, 8);
 
             // Parameter table
-            ew32(&mut buf, pl[i].ptbl, (pl[i].ptbl - pl[i].pvt) as u32);
-            let pv_type = match &params[i] {
+            ew32(&mut buf, layout.ptbl, (layout.ptbl - layout.pvt) as u32);
+            let pv_type = match param {
                 CParam::Int(_) => 1u8, // HL_PV_HLINT
                 CParam::ULong(_) => 4u8, // HL_PV_HLULONG (was incorrectly 5=hlfloat!)
                 CParam::Str(_) => 7u8, // HL_PV_HLSTRING
                 CParam::VecBytes(_) => 9u8, // HL_PV_HLVECBYTES
             };
-            buf[pl[i].ptbl + 4] = pv_type;
-            ew32(&mut buf, pl[i].ptbl + 8, (pl[i].vtbl - (pl[i].ptbl + 8)) as u32);
+            buf[layout.ptbl + 4] = pv_type;
+            ew32(&mut buf, layout.ptbl + 8, (layout.vtbl - (layout.ptbl + 8)) as u32);
 
             // Value vtable
-            ew16(&mut buf, pl[i].vvt, pl[i].vvtsz as u16);
-            ew16(&mut buf, pl[i].vvt + 2, pl[i].vtblsz as u16);
-            ew16(&mut buf, pl[i].vvt + 4, 4);
+            ew16(&mut buf, layout.vvt, layout.vvtsz as u16);
+            ew16(&mut buf, layout.vvt + 2, layout.vtblsz as u16);
+            ew16(&mut buf, layout.vvt + 4, 4);
 
             // Value table
-            ew32(&mut buf, pl[i].vtbl, (pl[i].vtbl - pl[i].vvt) as u32);
+            ew32(&mut buf, layout.vtbl, (layout.vtbl - layout.vvt) as u32);
 
-            match &params[i] {
+            match param {
                 CParam::Int(v) => {
-                    ew32(&mut buf, pl[i].vtbl + 4, *v as u32);
+                    ew32(&mut buf, layout.vtbl + 4, *v as u32);
                 }
                 CParam::ULong(v) => {
-                    ew64(&mut buf, pl[i].vtbl + 4, *v);
+                    ew64(&mut buf, layout.vtbl + 4, *v);
                 }
                 CParam::Str(s) => {
-                    ew32(&mut buf, pl[i].vtbl + 4, (pl[i].vdata - (pl[i].vtbl + 4)) as u32);
-                    ew32(&mut buf, pl[i].vdata, s.len() as u32);
-                    buf[pl[i].vdata + 4..pl[i].vdata + 4 + s.len()].copy_from_slice(s.as_bytes());
+                    ew32(&mut buf, layout.vtbl + 4, (layout.vdata - (layout.vtbl + 4)) as u32);
+                    ew32(&mut buf, layout.vdata, s.len() as u32);
+                    buf[layout.vdata + 4..layout.vdata + 4 + s.len()].copy_from_slice(s.as_bytes());
                 }
                 CParam::VecBytes(v) => {
-                    ew32(&mut buf, pl[i].vtbl + 4, (pl[i].vdata - (pl[i].vtbl + 4)) as u32);
-                    ew32(&mut buf, pl[i].vdata, v.len() as u32);
+                    ew32(&mut buf, layout.vtbl + 4, (layout.vdata - (layout.vtbl + 4)) as u32);
+                    ew32(&mut buf, layout.vdata, v.len() as u32);
                     if !v.is_empty() {
-                        buf[pl[i].vdata + 4..pl[i].vdata + 4 + v.len()].copy_from_slice(v);
+                        buf[layout.vdata + 4..layout.vdata + 4 + v.len()].copy_from_slice(v);
                     }
                 }
             }
@@ -998,10 +1012,8 @@ mod tests {
 
     #[test]
     fn fstab_cmdline_multiple_mixed_mounts() {
-        let mounts = vec![
-            Mount::rw("/a", "/mnt/a"),
-            Mount::ro("/b", "/mnt/b"),
-        ];
+        let mounts = [Mount::rw("/a", "/mnt/a"),
+            Mount::ro("/b", "/mnt/b")];
         let mut cmdline = "unikraft-hyperlight /entry".to_string();
         if !mounts.is_empty() {
             cmdline.push_str(" vfs.fstab=[");
