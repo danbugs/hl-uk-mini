@@ -59,16 +59,20 @@ client can run in two threads inside the same guest
 
 ## Enabling networking
 
-Pass `net: true` when creating a sandbox:
+Pass a `NetworkPolicy` when creating a sandbox:
 
 ```rust
+use hyperlight_unikraft::{NetworkPolicy, AllowList, BlockList, ListenPorts};
+
+// Full network access (all outbound destinations permitted):
 let (usandbox, _cfg) = create_sandbox(
-    &Some(rootfs), &None, 256, Vec::new(), true,
+    &Some(rootfs), &None, 256, Vec::new(),
+    Some(NetworkPolicy::AllowAll), None,
 )?;
 ```
 
-When `net` is `false` (the default), no `net_*` host functions are
-registered and guest socket calls fail.
+When `None` (the default), no `net_*` host functions are registered
+and guest socket calls fail.
 
 ## Host functions
 
@@ -105,18 +109,91 @@ All functions return negative `-errno` values on error.
 - **Protocols:** Only `AF_INET`/`AF_INET6` and `SOCK_STREAM`/`SOCK_DGRAM`.
   No raw sockets, no `AF_UNIX`.
 
-## Policy
+## Network policy
 
-Currently networking is **all-or-nothing**: `net: true` gives the
-guest full network access; `net: false` gives none.  There is no
-per-address, per-port, or per-protocol filtering.
+`NetworkPolicy` controls which outbound destinations a guest can reach.
+The host enforces the policy on `connect()` and `sendto()` — before
+the data leaves the VM.
 
-<!-- TODO: Add a NetworkPolicy struct (allow/deny lists for
-     addresses, ports, protocols) analogous to hostfs's per-mount
-     path scoping.  See mxc's egress policy model for reference. -->
+### Variants
+
+| Variant | Behaviour |
+|---------|-----------|
+| `AllowAll` | All destinations permitted (except link-local). |
+| `AllowList(AllowList)` | Only listed IPs/hostnames are reachable. |
+| `BlockList(BlockList)` | All destinations permitted *except* listed ones. |
+
+### Always-blocked addresses
+
+Regardless of which variant is active:
+
+- **Link-local** (`169.254.0.0/16`) — blocked for all variants.
+  Prevents the guest from reaching cloud metadata services
+  (e.g. Azure IMDS at `169.254.169.254`).
+
+### Loopback handling
+
+- **AllowAll** — permits loopback (`127.0.0.0/8`).  In the hostsock
+  model all guest sockets are real host sockets, so blocking loopback
+  would break intra-guest server+client patterns (e.g. `tcp_echo.py`).
+- **AllowList / BlockList** — blocks loopback.  Defense in depth:
+  a restricted guest shouldn't reach host services on `127.0.0.1`.
+
+### AllowList and DNS
+
+`AllowList::from_hosts()` accepts a mix of IPs and hostnames:
+
+```rust
+let al = AllowList::from_hosts(&["example.com", "10.0.0.5"])?;
+```
+
+Hostnames are resolved at construction time.  At check time, hostnames
+are re-resolved so that CDN IP rotation doesn't cause false positives.
+
+When using an AllowList, well-known DNS resolver IPs (`8.8.8.8`,
+`8.8.4.4`, `1.1.1.1`, `1.0.0.1`, plus any servers in
+`/etc/resolv.conf`) are automatically exempted on port 53 — otherwise
+the guest couldn't resolve the hostnames in the allowlist.
+
+The host also learns IPs dynamically: when a `recvfrom` on port 53
+returns a DNS response, the policy engine parses the A/AAAA records
+and adds the resolved IPs to the allowlist.
+
+### ListenPorts
+
+`ListenPorts` is orthogonal to the outbound policy — it controls which
+ports the guest may `bind()` for inbound connections:
+
+```rust
+let ports = ListenPorts::from([80, 443]);
+let (usandbox, _cfg) = create_sandbox(
+    &Some(rootfs), &None, 256, Vec::new(),
+    Some(NetworkPolicy::AllowAll), Some(ports),
+)?;
+```
+
+Ephemeral binds (port 0 — "assign any port") are always allowed.
+
+### CLI usage
+
+```sh
+# AllowAll — full access:
+hluk run --net ...
+
+# AllowList — only reach these hosts:
+hluk run --net --net-allow example.com --net-allow 10.0.0.5 ...
+
+# BlockList — block these hosts:
+hluk run --net --net-block evil.com --net-block 1.2.3.4 ...
+
+# Restrict inbound listen ports:
+hluk run --net --port 80 --port 443 ...
+```
 
 ## Examples
 
 - [`examples/python/tcp_echo.py`](../examples/python/tcp_echo.py) —
   TCP echo server and client running in two threads inside the guest
-  (requires `net: true`).
+  (requires `NetworkPolicy::AllowAll` — uses loopback).
+- [`examples/python/net_policy_probe.py`](../examples/python/net_policy_probe.py) —
+  UDP sendto probe for integration-testing policy enforcement.
