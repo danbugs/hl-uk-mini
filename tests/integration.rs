@@ -280,6 +280,29 @@ fn python_threading() {
     );
 }
 
+// ── Subprocess tests ──────────────────────────────────────────────
+
+/// Python spawning Python via subprocess.run() — exercises the kernel's
+/// vfork+execve path.  No os.fork() needed (Python 3.12 uses posix_spawn
+/// internally for subprocess).
+#[test]
+fn python_subprocess() {
+    let rootfs = require_rootfs!("python");
+    let (usandbox, cfg) = create_sandbox(
+        &Some(rootfs), &None, 256, Vec::new(), None, None,
+    ).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/python/subprocess_demo.py");
+    run(&mut sandbox, Exec::File(script)).unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("Subprocess demo passed"),
+        "expected subprocess_demo.py to print 'Subprocess demo passed', got: {output:?}",
+    );
+}
+
 // ── Hostnet tests ─────────────────────────────────────────────────
 
 /// Runs a TCP echo server and client inside the guest using threads.
@@ -367,6 +390,28 @@ fn python_http_get() {
     assert!(
         output.contains("HTTP GET test done"),
         "expected http_get.py to print 'HTTP GET test done', got: {output:?}",
+    );
+}
+
+/// Server thread blocks in select() with infinite timeout, client
+/// connects and exchanges data.  Validates the halt_irq fix: without
+/// it, select() with no timeout never wakes because the idle thread
+/// doesn't poll hostsock.
+#[test]
+fn python_threaded_select() {
+    let rootfs = require_rootfs!("python");
+    let (usandbox, cfg) = create_sandbox(
+        &Some(rootfs), &None, 256, Vec::new(), Some(NetworkPolicy::AllowAll), None,
+    ).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/python/threaded_select.py");
+    run(&mut sandbox, Exec::File(script)).unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("Threaded select() test passed"),
+        "expected threaded_select.py to pass, got: {output:?}",
     );
 }
 
