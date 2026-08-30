@@ -43,5 +43,8 @@ COPY --from=build /etc/ld.so.cache /etc/ld.so.cache
 # /tmp needed for guest filesystem writes (ramfs, in-memory)
 COPY --from=build /tmp /tmp
 
+# Fix sys.executable for subprocess support (see sitecustomize.py)
+COPY python/sitecustomize.py /usr/local/lib/python3.12/sitecustomize.py
+
 # Hyperlight driver
 COPY --from=build /hl_pydriver /usr/local/bin/hl_pydriver
