@@ -17,81 +17,85 @@
 # Unsupported — will not work in a unikernel
 # ═══════════════════════════════════════════════════════════════
 
+# ── Subprocess: tests that still crash ─────────────────────────────
+#
+# These modules crash because they use os.fork() directly, os.popen(),
+# or subprocess in ways that hit missing kernel features (CLONE_VM
+# not set, nested vfork, environment variable propagation, etc.).
+#
+# Note: 16 modules previously in this category now PASS after adding
+# sitecustomize.py (sys.executable fix) and leveraging Python 3.12's
+# posix_spawn/vfork path for subprocess.run().  The ones that still
+# crash genuinely need os.fork() or kernel features Unikraft lacks.
 [may-fix.no-subprocess]
-reason = "Test spawns Python subprocesses — vfork()+execve() exists in Unikraft but not wired up yet"
-todo = "Enable LIBPOSIX_PROCESS_MULTIPROCESS + APPELFLOADER_MULTIPROCESS kconfig"
+reason = "Test uses os.fork(), os.popen(), or subprocess patterns that crash in the vfork-only kernel"
+todo = "Investigate per-module: some may just need env-var propagation or signal fixes, not os.fork()"
 modules = [
-    "test_atexit",              # CRASH — verifies atexit handlers via subprocess
-    "test_audit",               # CRASH — tests sys.audit hooks via subprocess
-    "test_base64",              # CRASH — tests base64 CLI via subprocess.run()
-    "test_builtin",             # CRASH — tests exec/compile edge cases via subprocess
-    "test_bytes",               # CRASH — tests bytes CLI behavior via subprocess
-    "test_c_locale_coercion",   # CRASH — tests locale coercion by spawning with env vars
-    "test_calendar",            # CRASH — tests calendar CLI output via subprocess
-    "test_cgitb",               # CRASH — tests CGI traceback display via subprocess
-    "test_cmd_line",            # CRASH — tests Python CLI flags (-c, -m) via subprocess
-    "test_cmd_line_script",     # CRASH — tests script execution modes via subprocess
-    "test_code",                # CRASH — tests code object behavior via subprocess
-    "test_compile",             # CRASH — tests compilation edge cases via subprocess
+    "test_audit",               # CRASH — sys.audit subprocess isolation
+    "test_c_locale_coercion",   # CRASH — locale coercion via env vars across exec
+    "test_calendar",            # CRASH — calendar CLI subprocess
+    "test_cmd_line",            # CRASH — Python CLI flags (-c, -m) via subprocess
+    "test_cmd_line_script",     # CRASH — script execution modes via subprocess
+    "test_compile",             # CRASH — compilation edge cases via subprocess
     "test_compileall",          # CRASH — compileall spawns worker subprocesses
-    "test_cprofile",            # CRASH — profiles child processes via subprocess
-    "test_dtrace",              # CRASH — tests DTrace probes via subprocess
-    "test_embed",               # CRASH — tests embedding Python via subprocess
-    "test_eof",                 # CRASH — tests EOF handling via subprocess stdin
-    "test_exceptions",          # CRASH — tests exception traceback via subprocess
-    "test_fork1",               # CRASH — tests os.fork() directly
-    "test_fstring",             # CRASH — tests f-string SyntaxError via subprocess
-    "test_gc",                  # CRASH — tests GC leak detection via subprocess
-    "test_gzip",                # CRASH — tests gzip CLI via subprocess
-    "test_hash",                # CRASH — tests PYTHONHASHSEED via subprocess
-    "test_http_cookies",        # CRASH — some edge-case tests spawn subprocess
-    "test_io",                  # CRASH — tests I/O crash isolation via subprocess
-    "test_mailcap",             # CRASH — tests MIME handling via subprocess
-    "test_marshal",             # CRASH — tests marshal edge cases via subprocess
-    "test_multiprocessing_main_handling", # ERROR — __main__ handling uses subprocess
-    "test_ntpath",              # CRASH — path edge cases trigger subprocess
-    "test_os",                  # CRASH — tests os.exec*, spawn, fork via subprocess
-    "test_pdb",                 # CRASH — tests debugger via subprocess interaction
-    "test_perf_profiler",       # CRASH — tests perf integration via subprocess
-    "test_pipes",               # ERROR — uses os.popen() / subprocess
-    "test_platform",            # CRASH — calls uname/subprocess for system info
+    "test_dtrace",              # CRASH — DTrace probes via subprocess
+    "test_exceptions",          # CRASH — exception traceback via subprocess
+    "test_fork1",               # CRASH — tests os.fork() directly (unsupported)
+    "test_gc",                  # CRASH — GC leak detection via subprocess
+    "test_hash",                # CRASH — PYTHONHASHSEED via subprocess
+    "test_http_cookies",        # CRASH — edge-case tests spawn subprocess
+    "test_io",                  # CRASH — I/O crash isolation via subprocess
+    "test_mailcap",             # CRASH — MIME handling via subprocess
+    "test_os",                  # CRASH — tests os.exec*, spawn, fork
+    "test_pdb",                 # CRASH — debugger via subprocess interaction
+    "test_perf_profiler",       # CRASH — perf integration via subprocess
+    "test_platform",            # CRASH — uname/subprocess for system info
     "test_popen",               # CRASH — tests os.popen() directly
-    "test_posix",               # CRASH — tests fork, exec, wait via subprocess
-    "test_posixpath",           # CRASH — path edge cases trigger subprocess
-    "test_profile",             # CRASH — profiles via subprocess
-    "test_py_compile",          # CRASH — spawns subprocess for compilation
-    "test_quopri",              # CRASH — tests quoted-printable CLI via subprocess
+    "test_posix",               # CRASH — tests fork, exec, wait
     "test_regrtest",            # CRASH — runs the test runner itself via subprocess
-    "test_repl",                # CRASH — tests REPL via subprocess stdin/stdout
-    "test_runpy",               # CRASH — tests python -m via subprocess
-    "test_script_helper",       # CRASH — every test spawns Python subprocesses
-    "test_shutil",              # CRASH — tests shutil.which, archive ops via subprocess
-    "test_site",                # CRASH — tests site module via subprocess env vars
-    "test_source_encoding",     # CRASH — tests encoding detection via subprocess
+    "test_repl",                # CRASH — REPL via subprocess stdin/stdout
+    "test_shutil",              # CRASH — shutil.which, archive ops via subprocess
+    "test_source_encoding",     # CRASH — encoding detection via subprocess
     "test_subprocess",          # CRASH — directly tests subprocess module
     "test_support",             # CRASH — test.support utilities use subprocess
-    "test_sys",                 # CRASH — tests sys.exit, sys.path via subprocess
-    "test_sysconfig",           # CRASH — tests sysconfig via subprocess
-    "test_tabnanny",            # CRASH — tests tabnanny CLI via subprocess
-    "test_tarfile",             # ERROR — uses subprocess for compression/extraction
-    "test_tokenize",            # CRASH — tests tokenize CLI via subprocess
-    "test_trace",               # CRASH — tests trace module via subprocess
-    "test_traceback",           # CRASH — tests traceback via subprocess
-    "test_tracemalloc",         # CRASH — tests memory tracking via subprocess
-    "test_utf8_mode",           # CRASH — tests PYTHONUTF8 env var via subprocess
-    "test_uuid",                # CRASH — calls system commands via subprocess
-    "test_venv",                # FAIL  — creates virtualenvs (needs subprocess)
-    "test_wait3",               # CRASH — tests os.wait3() (needs fork/child)
-    "test_wait4",               # CRASH — tests os.wait4() (needs fork/child)
-    "test_zipimport_support",   # CRASH — tests zipimport via subprocess
+    "test_sys",                 # CRASH — sys.exit, sys.path via subprocess
+    "test_trace",               # CRASH — trace module via subprocess
+    "test_traceback",           # CRASH — traceback via subprocess
+    "test_tracemalloc",         # CRASH — memory tracking via subprocess
+    "test_utf8_mode",           # CRASH — PYTHONUTF8 env var via subprocess
+    "test_uuid",                # CRASH — system commands via subprocess
+    "test_wait3",               # CRASH — tests os.wait3() (needs fork)
+    "test_wait4",               # CRASH — tests os.wait4() (needs fork)
+]
+
+# ── Subprocess: partial passes ────────────────────────────────────
+#
+# These modules mostly pass but have a few test failures — typically
+# from individual tests that use os.fork() or hit missing features
+# while the rest of the module works fine via subprocess.run().
+[may-fix.subprocess-partial]
+reason = "Most tests pass via subprocess.run() but a few individual tests use os.fork() or hit missing features"
+todo = "Triage individual failures — some may be fixable, others need os.fork()"
+modules = [
+    "test_builtin",             # FAIL — 130 tests, 1 error
+    "test_cprofile",            # FAIL — 20 tests, 2 failures
+    "test_multiprocessing_main_handling", # ERROR — 1 error
+    "test_ntpath",              # FAIL — 93 tests, 1 error
+    "test_pipes",               # ERROR — uses os.popen()
+    "test_posixpath",           # FAIL — 87 tests, 18 fail, 4 error
+    "test_profile",             # FAIL — 6 tests, 1 failure
+    "test_py_compile",          # FAIL — 32 tests, 4 failures
+    "test_site",                # FAIL — 35 tests, 1 failure
+    "test_sysconfig",           # FAIL — 28 tests, 1 fail, 3 error
+    "test_tarfile",             # ERROR — 1 error
+    "test_venv",                # FAIL — 31 tests, 19 errors
 ]
 
 [may-fix.networking]
-reason = """hostsock individual ops (accept/recv/send) work with the EAGAIN+retry pattern, \
-but tests that run a threaded server using select()/poll() hang — Unikraft's epoll/poll shim \
-does not fully propagate socket readiness events set by the idle-loop rescan, so a thread \
-blocked in select() never wakes up.  AF_UNIX and SSL are unsupported."""
-todo = "Fix epoll/poll shim integration with posix_sock_event_set(); getaddrinfo V4MAPPED assertion crash in net_resolve"
+reason = """hostsock individual ops work; threaded select/poll works after halt_irq fix. \
+Remaining failures: threaded server tests that crash on thread lifecycle bugs, \
+getaddrinfo V4MAPPED assertion crash, AF_UNIX and SSL unsupported."""
+todo = "Fix thread lifecycle crashes; getaddrinfo V4MAPPED assertion in net_resolve"
 modules = [
     "test_docxmlrpc",           # HANG  — XML-RPC over HTTP; threaded server's select() never wakes
     "test_ftplib",              # CRASH — FTP client uses threaded server with select()
@@ -105,7 +109,6 @@ modules = [
     "test_socket",              # CRASH — non-threaded tests pass; threaded tests hang; getaddrinfo V4MAPPED crash
     "test_socketserver",        # CRASH — socket server with threaded select()
     "test_ssl",                 # ERROR — SSL/TLS (needs OpenSSL)
-    "test_timeout",             # HANG  — 13/14 pass, 1 hangs on threaded server's select()
     "test_urllib2",             # CRASH — urllib2 HTTP uses threaded server with select()
     "test_urllib2_localnet",    # CRASH — urllib2 local network with threaded select()
     "test_wsgiref",             # HANG  — 36/37 pass, 1 hangs on threaded server's select()
@@ -270,6 +273,7 @@ modules = [
     "test_mailbox",             # FAIL  — mailbox file locking/permissions
     "test_pathlib",             # FAIL  — path operations
     "test_unicode_file",        # FAIL  — unicode filename handling
+    "test_unicode_file_functions", # FAIL — 30 tests, 5 errors; unicode file ops (symlinks, perms)
     "test_zipimport",           # FAIL  — zipimport path handling
 ]
 

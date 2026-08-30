@@ -106,6 +106,12 @@ rebuild-rootfs runtime:
     echo "==> Rebuilding $image (--no-cache)"
     docker build --no-cache -t "$image" -f "$dockerfile" "{{drivers_dir}}/"
     just build-rootfs "{{runtime}}"
+    # Rebuild the conformance rootfs too (it inherits the base image)
+    conformance_dockerfile="{{conformance_dir}}/{{runtime}}/Dockerfile"
+    if [ -f "$conformance_dockerfile" ]; then
+        echo "==> Rebuilding conformance image (inherits base)..."
+        just build-conformance "{{runtime}}"
+    fi
     # Invalidate snapshots built from the old rootfs
     rm -rf "{{snapshot_dir}}/{{runtime}}" "{{snapshot_dir}}/{{runtime}}-conformance"
     echo "==> Stale snapshots removed"
@@ -423,6 +429,17 @@ build-conformance runtime:
     (cd "$tmpdir" && find . | cpio -o -H newc --quiet > "$output")
     echo "==> Done: $output ($(du -h "$output" | cut -f1))"
 
+# Clean rebuild of the conformance rootfs — rebuilds both the base
+# driver image and the conformance image, and invalidates stale snapshots.
+[unix]
+rebuild-conformance runtime:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just rebuild-rootfs "{{runtime}}"
+    just build-conformance "{{runtime}}"
+    rm -rf "{{snapshot_dir}}/{{runtime}}-conformance"
+    echo "==> Stale conformance snapshot removed"
+
 # Run upstream conformance tests for a runtime.
 # Each test module runs in its own guest (snapshot restore) so a crash
 # in one doesn't kill the suite and memory resets between tests.
@@ -457,6 +474,7 @@ conformance runtime *modules:
         "$hluk" snapshot save \
             --initrd "$rootfs" \
             --scratch-mb "$scratch" \
+            --net \
             --output "$snap_dir"
     fi
 
@@ -499,7 +517,7 @@ conformance runtime *modules:
         inline=$(printf "MODULE='%s'\n%s" "$mod" "$(cat '{{conformance_dir}}/{{runtime}}/run_tests.py')")
 
         output=$(timeout --kill-after=5 60 "$hluk" snapshot exec "$snap_dir" \
-            --exec "$inline" 2>/dev/null || echo "RESULT $mod status=CRASH tests=0 fail=0 error=0 skip=0 time=0")
+            --net --exec "$inline" 2>/dev/null || echo "RESULT $mod status=CRASH tests=0 fail=0 error=0 skip=0 time=0")
 
         # Extract the RESULT line
         result_line=$(echo "$output" | tr -d '\r' | grep "^RESULT " | tail -1)
