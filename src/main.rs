@@ -366,11 +366,18 @@ fn cmd_snapshot_save(args: SaveArgs) -> hyperlight_unikraft::hyperlight_host::Re
 
     let t = Instant::now();
     let digest = snap.save(&args.output, &tag)?;
+    let save_ms = t.elapsed().as_secs_f64() * 1000.0;
     info!(
         path = %args.output.display(),
         digest = %digest,
-        elapsed_ms = t.elapsed().as_secs_f64() * 1000.0,
+        elapsed_ms = save_ms,
         "snapshot saved",
+    );
+
+    eprintln!(
+        "Snapshot saved to {} ({:.1} ms)",
+        args.output.display(),
+        save_ms,
     );
 
     Ok(())
