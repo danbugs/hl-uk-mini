@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hyperlight_unikraft::{
-    Exec, Mount, SNAPSHOT_TAG,
+    AllowList, BlockList, Exec, ListenPorts, Mount, NetworkPolicy, SNAPSHOT_TAG,
     create_sandbox, init, restore, run,
     OciTag, Snapshot,
 };
@@ -50,7 +50,7 @@ macro_rules! require_rootfs {
 #[test]
 fn python_inline_code() {
     let rootfs = require_rootfs!("python");
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), false).unwrap();
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
     run(&mut sandbox, "print('hluk-test-ok')").unwrap();
     let output = cfg.drain_output();
@@ -65,7 +65,7 @@ fn python_exec_file() {
     let rootfs = require_rootfs!("python");
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("examples/python/hello.py");
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), false).unwrap();
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
@@ -81,7 +81,7 @@ fn python_snapshot_round_trip() {
     let snap_dir = snapshot_dir("py-snap");
 
     // Save
-    let (usandbox, _cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), false).unwrap();
+    let (usandbox, _cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
@@ -90,7 +90,7 @@ fn python_snapshot_round_trip() {
     // Restore + run
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
-    let (mut sandbox, cfg2) = restore(snap, Vec::new(), false).unwrap();
+    let (mut sandbox, cfg2) = restore(snap, Vec::new(), None, None).unwrap();
     run(&mut sandbox, "print('restored-ok')").unwrap();
     let output = cfg2.drain_output();
     assert!(
@@ -104,7 +104,7 @@ fn python_snapshot_round_trip() {
 #[test]
 fn python_multiple_runs() {
     let rootfs = require_rootfs!("python");
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), false).unwrap();
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
     run(&mut sandbox, "x = 1 + 1").unwrap();
     run(&mut sandbox, "print(f'x={x}')").unwrap();
@@ -128,7 +128,7 @@ fn node_exec_file() {
     let rootfs = require_rootfs!("node");
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("examples/node/hello.js");
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 512, Vec::new(), false).unwrap();
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
@@ -141,7 +141,7 @@ fn node_exec_file() {
 #[test]
 fn node_inline_code() {
     let rootfs = require_rootfs!("node");
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 512, Vec::new(), false).unwrap();
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
     run(&mut sandbox, "console.log('hluk-node-ok')").unwrap();
     let output = cfg.drain_output();
@@ -164,7 +164,7 @@ fn python_fs_ops() {
 
     let mounts = vec![Mount::rw(&mount_dir, "/mnt/host")];
     let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs), &None, 256, mounts, false,
+        &Some(rootfs), &None, 256, mounts, None, None,
     ).unwrap();
     let mut sandbox = init(usandbox).unwrap();
 
@@ -215,7 +215,7 @@ fn python_fs_large_file() {
 
     let mounts = vec![Mount::rw(&mount_dir, "/mnt/host")];
     let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs), &None, 256, mounts, false,
+        &Some(rootfs), &None, 256, mounts, None, None,
     ).unwrap();
     let mut sandbox = init(usandbox).unwrap();
 
@@ -246,7 +246,7 @@ fn python_fs_large_file() {
 #[test]
 fn python_guest_fs_ops() {
     let rootfs = require_rootfs!("python");
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), false).unwrap();
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
 
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -266,7 +266,7 @@ fn python_guest_fs_ops() {
 fn python_threading() {
     let rootfs = require_rootfs!("python");
     let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs), &None, 256, Vec::new(), false,
+        &Some(rootfs), &None, 256, Vec::new(), None, None,
     ).unwrap();
     let mut sandbox = init(usandbox).unwrap();
 
@@ -291,7 +291,7 @@ fn python_threading() {
 fn python_tcp_echo() {
     let rootfs = require_rootfs!("python");
     let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs), &None, 256, Vec::new(), true,
+        &Some(rootfs), &None, 256, Vec::new(), Some(NetworkPolicy::AllowAll), None,
     ).unwrap();
     let mut sandbox = init(usandbox).unwrap();
 
@@ -312,7 +312,7 @@ fn python_tcp_echo() {
 fn python_tcp_bidir() {
     let rootfs = require_rootfs!("python");
     let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs), &None, 256, Vec::new(), true,
+        &Some(rootfs), &None, 256, Vec::new(), Some(NetworkPolicy::AllowAll), None,
     ).unwrap();
     let mut sandbox = init(usandbox).unwrap();
 
@@ -333,7 +333,7 @@ fn python_tcp_bidir() {
 fn python_http_server_client() {
     let rootfs = require_rootfs!("python");
     let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs), &None, 256, Vec::new(), true,
+        &Some(rootfs), &None, 256, Vec::new(), Some(NetworkPolicy::AllowAll), None,
     ).unwrap();
     let mut sandbox = init(usandbox).unwrap();
 
@@ -356,7 +356,7 @@ fn python_http_server_client() {
 fn python_http_get() {
     let rootfs = require_rootfs!("python");
     let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs), &None, 256, Vec::new(), true,
+        &Some(rootfs), &None, 256, Vec::new(), Some(NetworkPolicy::AllowAll), None,
     ).unwrap();
     let mut sandbox = init(usandbox).unwrap();
 
@@ -375,7 +375,7 @@ fn python_http_get() {
 #[test]
 fn exec_file_not_found() {
     let rootfs = require_rootfs!("python");
-    let (usandbox, _cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), false).unwrap();
+    let (usandbox, _cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
     let result = run(&mut sandbox, Exec::File("/nonexistent/script.py".into()));
     assert!(result.is_err());
@@ -388,7 +388,8 @@ fn create_sandbox_missing_initrd() {
         &None,
         256,
         Vec::new(),
-        false,
+        None,
+        None,
     );
     assert!(result.is_err());
 }
@@ -396,9 +397,211 @@ fn create_sandbox_missing_initrd() {
 #[test]
 fn create_sandbox_no_initrd() {
     // Should succeed — just no rootfs mapped.
-    let (usandbox, cfg) = create_sandbox(&None, &None, 256, Vec::new(), false).unwrap();
+    let (usandbox, cfg) = create_sandbox(&None, &None, 256, Vec::new(), None, None).unwrap();
     assert_eq!(cfg.initrd_base, 0);
     assert_eq!(cfg.initrd_size, 0);
     // Don't evolve — no driver to run without an initrd.
     drop(usandbox);
+}
+
+// ── Network policy tests ──────────────────────────────────────────
+
+/// The host's non-loopback IP.  Connecting to this IP on a non-listening
+/// port gives instant ECONNREFUSED (the kernel sends a RST because no
+/// socket is bound).  This lets us test "policy permits the connection"
+/// without waiting for a TCP timeout to an unreachable remote IP.
+///
+/// Uses the standard UDP-connect-to-8.8.8.8 trick: the kernel picks the
+/// source IP for the default route without sending any packets.
+fn host_ip() -> String {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    sock.connect("8.8.8.8:80").unwrap();
+    sock.local_addr().unwrap().ip().to_string()
+}
+
+/// A high port that nothing listens on.  Connecting to `host_ip():UNUSED_PORT`
+/// returns ECONNREFUSED instantly.
+const UNUSED_PORT: u16 = 19999;
+
+/// Helper: run the policy probe inside the guest and return the output.
+///
+/// The probe tests both TCP connect (reg_connect) and UDP sendto
+/// (reg_sendto).  Output lines: TCP_OK/TCP_BLOCKED/TCP_REFUSED/TCP_FAIL
+/// and UDP_OK/UDP_BLOCKED/UDP_FAIL.
+fn net_probe(
+    policy: Option<NetworkPolicy>,
+    listen_ports: Option<ListenPorts>,
+    host: &str,
+    port: u16,
+) -> String {
+    let rootfs = match rootfs("python") {
+        Some(p) => p,
+        None => return "SKIP".to_string(),
+    };
+    let (usandbox, cfg) = create_sandbox(
+        &Some(rootfs), &None, 256, Vec::new(), policy, listen_ports,
+    ).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    let code = format!(
+        "HOST = {host:?}; PORT = {port}\n{}",
+        include_str!("../examples/python/net_policy_probe.py"),
+    );
+    let _ = run(&mut sandbox, &*code);
+    cfg.drain_output()
+}
+
+/// Networking disabled by default — guest socket calls fail because
+/// net_* host functions aren't registered at all.
+#[test]
+fn net_policy_disabled_by_default() {
+    let rootfs = require_rootfs!("python");
+    let (usandbox, cfg) = create_sandbox(
+        &Some(rootfs), &None, 256, Vec::new(), None, None,
+    ).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    // socket() calls the net_socket host function which isn't registered,
+    // causing the guest to abort — run() returns an error.
+    let result = run(&mut sandbox, "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); print('SOCKET_OK')");
+    let output = cfg.drain_output();
+    assert!(
+        result.is_err() || !output.contains("SOCKET_OK"),
+        "expected socket creation to fail when networking is disabled, got result={result:?}, output={output:?}",
+    );
+}
+
+/// AllowAll blocks link-local addresses (cloud metadata service).
+#[test]
+fn net_policy_allowall_blocks_link_local() {
+    let output = net_probe(
+        Some(NetworkPolicy::AllowAll),
+        None,
+        "169.254.169.254",
+        80,
+    );
+    if output == "SKIP" { return; }
+    assert!(
+        output.contains("TCP_BLOCKED"),
+        "expected link-local 169.254.169.254 to be TCP-blocked even with AllowAll, got: {output:?}",
+    );
+    assert!(
+        output.contains("UDP_BLOCKED"),
+        "expected link-local 169.254.169.254 to be UDP-blocked even with AllowAll, got: {output:?}",
+    );
+}
+
+/// AllowAll permits loopback — needed for intra-guest server+client
+/// patterns.  In the hostsock model all guest sockets are host sockets,
+/// so blocking loopback would prevent guest-internal networking.
+/// AllowList/BlockList still block loopback (defense in depth).
+#[test]
+fn net_policy_allowall_permits_loopback() {
+    let output = net_probe(
+        Some(NetworkPolicy::AllowAll),
+        None,
+        "127.0.0.1",
+        UNUSED_PORT,
+    );
+    if output == "SKIP" { return; }
+    // Loopback should pass the policy check.  TCP gives ECONNREFUSED
+    // (nothing listening), not EACCES.  UDP sendto succeeds.
+    assert!(
+        !output.contains("TCP_BLOCKED"),
+        "expected loopback 127.0.0.1 to be TCP-permitted by AllowAll, got: {output:?}",
+    );
+    assert!(
+        !output.contains("UDP_BLOCKED"),
+        "expected loopback 127.0.0.1 to be UDP-permitted by AllowAll, got: {output:?}",
+    );
+}
+
+/// AllowList permits connections to a listed IP.
+///
+/// Uses the host's own IP on a non-listening port — the kernel RSTs
+/// immediately (ECONNREFUSED), proving the policy check passed without
+/// waiting for a remote TCP handshake.
+#[test]
+fn net_policy_allowlist_permits() {
+    let ip = host_ip();
+    let al = AllowList::from_hosts(&[ip.as_str()]).unwrap();
+    let output = net_probe(
+        Some(NetworkPolicy::AllowList(al)),
+        None,
+        &ip,
+        UNUSED_PORT,
+    );
+    if output == "SKIP" { return; }
+    assert!(
+        !output.contains("TCP_BLOCKED"),
+        "expected allowlisted IP {ip} to pass TCP policy check, got: {output:?}",
+    );
+    assert!(
+        !output.contains("UDP_BLOCKED"),
+        "expected allowlisted IP {ip} to pass UDP policy check, got: {output:?}",
+    );
+}
+
+/// AllowList blocks connections to an unlisted IP.
+#[test]
+fn net_policy_allowlist_blocks() {
+    let al = AllowList::from_hosts(&["93.184.216.34"]).unwrap();
+    let output = net_probe(
+        Some(NetworkPolicy::AllowList(al)),
+        None,
+        "1.2.3.4",
+        80,
+    );
+    if output == "SKIP" { return; }
+    assert!(
+        output.contains("TCP_BLOCKED"),
+        "expected unlisted IP 1.2.3.4 to be TCP-blocked by AllowList, got: {output:?}",
+    );
+    assert!(
+        output.contains("UDP_BLOCKED"),
+        "expected unlisted IP 1.2.3.4 to be UDP-blocked by AllowList, got: {output:?}",
+    );
+}
+
+/// BlockList blocks connections to a listed IP.
+#[test]
+fn net_policy_blocklist_blocks() {
+    let bl = BlockList::from_hosts(&["1.2.3.4"]).unwrap();
+    let output = net_probe(
+        Some(NetworkPolicy::BlockList(bl)),
+        None,
+        "1.2.3.4",
+        80,
+    );
+    if output == "SKIP" { return; }
+    assert!(
+        output.contains("TCP_BLOCKED"),
+        "expected listed IP 1.2.3.4 to be TCP-blocked by BlockList, got: {output:?}",
+    );
+    assert!(
+        output.contains("UDP_BLOCKED"),
+        "expected listed IP 1.2.3.4 to be UDP-blocked by BlockList, got: {output:?}",
+    );
+}
+
+/// BlockList permits connections to an unlisted IP.
+///
+/// Uses the host's own IP (same as allowlist_permits) for instant response.
+#[test]
+fn net_policy_blocklist_permits() {
+    let ip = host_ip();
+    let bl = BlockList::from_hosts(&["1.2.3.4"]).unwrap();
+    let output = net_probe(
+        Some(NetworkPolicy::BlockList(bl)),
+        None,
+        &ip,
+        UNUSED_PORT,
+    );
+    if output == "SKIP" { return; }
+    assert!(
+        !output.contains("TCP_BLOCKED"),
+        "expected unlisted IP {ip} to pass TCP BlockList policy check, got: {output:?}",
+    );
+    assert!(
+        !output.contains("UDP_BLOCKED"),
+        "expected unlisted IP {ip} to pass UDP BlockList policy check, got: {output:?}",
+    );
 }
