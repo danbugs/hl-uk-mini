@@ -151,6 +151,28 @@ fn node_inline_code() {
     );
 }
 
+#[test]
+fn node_snapshot_round_trip() {
+    let rootfs = require_rootfs!("node");
+    let snap_dir = snapshot_dir("node-snap");
+    let (usandbox, _cfg) = create_sandbox(&Some(rootfs.clone()), &None, 512, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    let snap = sandbox.snapshot().unwrap();
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    snap.save(&snap_dir, &tag).unwrap();
+
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
+    let (mut sandbox, cfg2) = restore(snap, Vec::new(), None, None).unwrap();
+    run(&mut sandbox, "console.log('restored-node-ok')").unwrap();
+    let output = cfg2.drain_output();
+    assert!(
+        output.contains("restored-node-ok"),
+        "expected restored node output, got: {output:?}",
+    );
+    let _ = std::fs::remove_dir_all(&snap_dir);
+}
+
 // ── Bash tests ────────────────────────────────────────────────────
 
 #[test]
@@ -321,6 +343,432 @@ fn dotnet_jit_multiple_runs() {
         output2.contains("x=2"),
         "expected 'x=2' from second dispatch, got: {output2:?}",
     );
+}
+
+// ── Tier 3 (compiled language) tests ─────────────────────────────
+//
+// These compile the example source at test time, mount the build
+// directory into the guest via hostfs, and dispatch the guest path —
+// the same `--mount` + `--exec` pattern users use on the CLI.
+
+/// Guest mount point for compiled binaries.
+const BIN_MOUNT: &str = "/mnt/bin";
+
+/// Compile a source file into the given output path.
+fn compile_example(cmd: &str, args: &[&str], out_path: &std::path::Path) {
+    let output = std::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("{cmd} failed to start: {e}"));
+    assert!(
+        output.status.success(),
+        "{cmd} failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(out_path.exists(), "compiler didn't produce {}", out_path.display());
+}
+
+#[test]
+fn c_hello() {
+    let rootfs = require_rootfs!("c");
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/c/hello.c");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-c-{}", std::process::id()));
+    std::fs::create_dir_all(&build_dir).unwrap();
+    let out = build_dir.join("hello");
+    compile_example("gcc", &[
+        "-O2", "-Wall", "-static-pie", "-fPIE",
+        "-o", out.to_str().unwrap(), src.to_str().unwrap(),
+    ], &out);
+
+    let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts, None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, "/mnt/bin/hello").unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("Hello from C on Hyperlight"),
+        "expected C hello output, got: {output:?}",
+    );
+    let _ = std::fs::remove_dir_all(&build_dir);
+}
+
+#[test]
+fn c_snapshot_round_trip() {
+    let rootfs = require_rootfs!("c");
+    let snap_dir = snapshot_dir("c-snap");
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/c/hello.c");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-c-snap-bin-{}", std::process::id()));
+    std::fs::create_dir_all(&build_dir).unwrap();
+    let out = build_dir.join("hello");
+    compile_example("gcc", &[
+        "-O2", "-Wall", "-static-pie", "-fPIE",
+        "-o", out.to_str().unwrap(), src.to_str().unwrap(),
+    ], &out);
+
+    // Save with mount configured (empty dir — binary not needed at save time)
+    let empty_mount = std::env::temp_dir().join(format!(
+        "hluk-test-c-snap-mount-{}", std::process::id(),
+    ));
+    std::fs::create_dir_all(&empty_mount).unwrap();
+    let mounts_save = vec![Mount::rw(&empty_mount, BIN_MOUNT)];
+    let (usandbox, _cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts_save, None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    let snap = sandbox.snapshot().unwrap();
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    snap.save(&snap_dir, &tag).unwrap();
+
+    // Restore — mount points to directory with the binary
+    let mounts_run = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
+    let (mut sandbox, cfg2) = restore(snap, mounts_run, None, None).unwrap();
+    run(&mut sandbox, "/mnt/bin/hello").unwrap();
+    let output = cfg2.drain_output();
+    assert!(
+        output.contains("Hello from C on Hyperlight"),
+        "expected C hello from snapshot, got: {output:?}",
+    );
+
+    let _ = std::fs::remove_dir_all(&build_dir);
+    let _ = std::fs::remove_dir_all(&empty_mount);
+    let _ = std::fs::remove_dir_all(&snap_dir);
+}
+
+#[test]
+fn rust_hello() {
+    let rootfs = require_rootfs!("rust");
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/rust/hello.rs");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-rust-{}", std::process::id()));
+    std::fs::create_dir_all(&build_dir).unwrap();
+    let out = build_dir.join("hello");
+    compile_example("rustc", &[
+        "-C", "opt-level=2",
+        "-C", "target-feature=+crt-static",
+        "-C", "relocation-model=pie",
+        "-o", out.to_str().unwrap(), src.to_str().unwrap(),
+    ], &out);
+
+    let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts, None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, "/mnt/bin/hello").unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("Hello from Rust on Hyperlight"),
+        "expected Rust hello output, got: {output:?}",
+    );
+    let _ = std::fs::remove_dir_all(&build_dir);
+}
+
+#[test]
+fn go_hello() {
+    let rootfs = require_rootfs!("go");
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/go/hello.go");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-go-{}", std::process::id()));
+    std::fs::create_dir_all(&build_dir).unwrap();
+    let out = build_dir.join("hello");
+    let status = std::process::Command::new("go")
+        .args(["build", "-buildmode=pie", "-ldflags=-s -w",
+               "-o", out.to_str().unwrap(), src.to_str().unwrap()])
+        .env("CGO_ENABLED", "0")
+        .status()
+        .expect("go build failed to start");
+    assert!(status.success(), "go build failed");
+
+    let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 128, mounts, None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, "/mnt/bin/hello").unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("Hello from Go on Hyperlight"),
+        "expected Go hello output, got: {output:?}",
+    );
+    let _ = std::fs::remove_dir_all(&build_dir);
+}
+
+/// Run `dotnet publish` and return true on success. Suppresses build output.
+fn dotnet_publish(proj: &std::path::Path, out_dir: &std::path::Path) -> bool {
+    match std::process::Command::new("dotnet")
+        .args(["publish", "-c", "Release", "-r", "linux-musl-x64",
+               "-v", "q", "--nologo",
+               "-o", out_dir.to_str().unwrap()])
+        .current_dir(proj)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(s) => s.success(),
+        Err(_) => false,
+    }
+}
+
+#[test]
+fn dotnet_aot_hello() {
+    let rootfs = require_rootfs!("dotnet-aot");
+    let proj = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/dotnet-aot");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-dotnet-aot-{}", std::process::id()));
+
+    if !dotnet_publish(&proj, &build_dir) {
+        eprintln!("SKIP: dotnet publish failed");
+        return;
+    }
+
+    let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, mounts, None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, "/mnt/bin/Hello").unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("Hello from .NET AOT on Hyperlight"),
+        "expected .NET AOT hello output, got: {output:?}",
+    );
+    let _ = std::fs::remove_dir_all(&build_dir);
+}
+
+#[test]
+fn dotnet_aot_snapshot_round_trip() {
+    let rootfs = require_rootfs!("dotnet-aot");
+    let snap_dir = snapshot_dir("dotnet-aot-snap");
+    let proj = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/dotnet-aot");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-dotnet-aot-snap-bin-{}", std::process::id()));
+
+    if !dotnet_publish(&proj, &build_dir) {
+        eprintln!("SKIP: dotnet publish failed");
+        return;
+    }
+
+    // Save with mount configured
+    let empty_mount = std::env::temp_dir().join(format!(
+        "hluk-test-dotnet-aot-snap-mount-{}", std::process::id(),
+    ));
+    std::fs::create_dir_all(&empty_mount).unwrap();
+    let mounts_save = vec![Mount::rw(&empty_mount, BIN_MOUNT)];
+    let (usandbox, _cfg) = create_sandbox(&Some(rootfs), &None, 256, mounts_save, None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    let snap = sandbox.snapshot().unwrap();
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    snap.save(&snap_dir, &tag).unwrap();
+
+    // Restore — mount points to build directory
+    let mounts_run = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
+    let (mut sandbox, cfg2) = restore(snap, mounts_run, None, None).unwrap();
+    run(&mut sandbox, "/mnt/bin/Hello").unwrap();
+    let output = cfg2.drain_output();
+    assert!(
+        output.contains("Hello from .NET AOT on Hyperlight"),
+        "expected .NET AOT hello from snapshot, got: {output:?}",
+    );
+
+    let _ = std::fs::remove_dir_all(&build_dir);
+    let _ = std::fs::remove_dir_all(&empty_mount);
+    let _ = std::fs::remove_dir_all(&snap_dir);
+}
+
+#[test]
+fn rust_snapshot_round_trip() {
+    let rootfs = require_rootfs!("rust");
+    let snap_dir = snapshot_dir("rust-snap");
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/rust/hello.rs");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-rust-snap-bin-{}", std::process::id()));
+    std::fs::create_dir_all(&build_dir).unwrap();
+    let out = build_dir.join("hello");
+    compile_example("rustc", &[
+        "-C", "opt-level=2",
+        "-C", "target-feature=+crt-static",
+        "-C", "relocation-model=pie",
+        "-o", out.to_str().unwrap(), src.to_str().unwrap(),
+    ], &out);
+
+    // Save with mount configured
+    let empty_mount = std::env::temp_dir().join(format!(
+        "hluk-test-rust-snap-mount-{}", std::process::id(),
+    ));
+    std::fs::create_dir_all(&empty_mount).unwrap();
+    let mounts_save = vec![Mount::rw(&empty_mount, BIN_MOUNT)];
+    let (usandbox, _cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts_save, None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    let snap = sandbox.snapshot().unwrap();
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    snap.save(&snap_dir, &tag).unwrap();
+
+    // Restore — mount points to build directory
+    let mounts_run = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
+    let (mut sandbox, cfg2) = restore(snap, mounts_run, None, None).unwrap();
+    run(&mut sandbox, "/mnt/bin/hello").unwrap();
+    let output = cfg2.drain_output();
+    assert!(
+        output.contains("Hello from Rust on Hyperlight"),
+        "expected Rust hello from snapshot, got: {output:?}",
+    );
+
+    let _ = std::fs::remove_dir_all(&build_dir);
+    let _ = std::fs::remove_dir_all(&empty_mount);
+    let _ = std::fs::remove_dir_all(&snap_dir);
+}
+
+#[test]
+fn go_snapshot_round_trip() {
+    let rootfs = require_rootfs!("go");
+    let snap_dir = snapshot_dir("go-snap");
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/go/hello.go");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-go-snap-bin-{}", std::process::id()));
+    std::fs::create_dir_all(&build_dir).unwrap();
+    let out = build_dir.join("hello");
+    let status = std::process::Command::new("go")
+        .args(["build", "-buildmode=pie", "-ldflags=-s -w",
+               "-o", out.to_str().unwrap(), src.to_str().unwrap()])
+        .env("CGO_ENABLED", "0")
+        .status()
+        .expect("go build failed to start");
+    assert!(status.success(), "go build failed");
+
+    // Save with mount configured
+    let empty_mount = std::env::temp_dir().join(format!(
+        "hluk-test-go-snap-mount-{}", std::process::id(),
+    ));
+    std::fs::create_dir_all(&empty_mount).unwrap();
+    let mounts_save = vec![Mount::rw(&empty_mount, BIN_MOUNT)];
+    let (usandbox, _cfg) = create_sandbox(&Some(rootfs), &None, 128, mounts_save, None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    let snap = sandbox.snapshot().unwrap();
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    snap.save(&snap_dir, &tag).unwrap();
+
+    // Restore — mount points to build directory
+    let mounts_run = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
+    let (mut sandbox, cfg2) = restore(snap, mounts_run, None, None).unwrap();
+    run(&mut sandbox, "/mnt/bin/hello").unwrap();
+    let output = cfg2.drain_output();
+    assert!(
+        output.contains("Hello from Go on Hyperlight"),
+        "expected Go hello from snapshot, got: {output:?}",
+    );
+
+    let _ = std::fs::remove_dir_all(&build_dir);
+    let _ = std::fs::remove_dir_all(&empty_mount);
+    let _ = std::fs::remove_dir_all(&snap_dir);
+}
+
+/// Mount a directory with two different C binaries, run both from
+/// the same sandbox.  Proves the mount is live and multiple binaries
+/// can be dispatched without rebooting.
+#[test]
+fn c_multi_binary_mount() {
+    let rootfs = require_rootfs!("c");
+    let hello_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/c/hello.c");
+    let goodbye_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/c/goodbye.c");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-c-multi-{}", std::process::id()));
+    std::fs::create_dir_all(&build_dir).unwrap();
+
+    let hello_out = build_dir.join("hello");
+    compile_example("gcc", &[
+        "-O2", "-Wall", "-static-pie", "-fPIE",
+        "-o", hello_out.to_str().unwrap(), hello_src.to_str().unwrap(),
+    ], &hello_out);
+
+    let goodbye_out = build_dir.join("goodbye");
+    compile_example("gcc", &[
+        "-O2", "-Wall", "-static-pie", "-fPIE",
+        "-o", goodbye_out.to_str().unwrap(), goodbye_src.to_str().unwrap(),
+    ], &goodbye_out);
+
+    let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts, None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+
+    run(&mut sandbox, "/mnt/bin/hello").unwrap();
+    run(&mut sandbox, "/mnt/bin/goodbye").unwrap();
+
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("Hello from C on Hyperlight"),
+        "expected hello output, got: {output:?}",
+    );
+    assert!(
+        output.contains("Goodbye from C on Hyperlight"),
+        "expected goodbye output, got: {output:?}",
+    );
+    let _ = std::fs::remove_dir_all(&build_dir);
+}
+
+/// C++ static-pie binary runs on the C rootfs — no separate runtime needed.
+#[test]
+fn cpp_hello() {
+    let rootfs = require_rootfs!("c");
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/c/hello_cpp.cpp");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-cpp-{}", std::process::id()));
+    std::fs::create_dir_all(&build_dir).unwrap();
+    let out = build_dir.join("hello_cpp");
+    compile_example("g++", &[
+        "-O2", "-Wall", "-static-pie", "-fPIE",
+        "-o", out.to_str().unwrap(), src.to_str().unwrap(),
+    ], &out);
+
+    let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts, None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, "/mnt/bin/hello_cpp").unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("Hello from C++ on Hyperlight"),
+        "expected C++ hello output, got: {output:?}",
+    );
+    let _ = std::fs::remove_dir_all(&build_dir);
+}
+
+#[test]
+fn powershell_hello() {
+    let rootfs = require_rootfs!("powershell");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/powershell/hello.ps1");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 1024, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, Exec::File(script)).unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("Hello from PowerShell on Hyperlight"),
+        "expected PowerShell hello output, got: {output:?}",
+    );
+}
+
+#[test]
+fn powershell_snapshot_round_trip() {
+    let rootfs = require_rootfs!("powershell");
+    let snap_dir = snapshot_dir("powershell-snap");
+    let (usandbox, _cfg) = create_sandbox(&Some(rootfs.clone()), &None, 1024, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    let snap = sandbox.snapshot().unwrap();
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    snap.save(&snap_dir, &tag).unwrap();
+
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
+    let (mut sandbox, cfg2) = restore(snap, Vec::new(), None, None).unwrap();
+    run(&mut sandbox, "[Console]::WriteLine('restored-pwsh-ok')").unwrap();
+    let output = cfg2.drain_output();
+    assert!(
+        output.contains("restored-pwsh-ok"),
+        "expected restored PowerShell output, got: {output:?}",
+    );
+    let _ = std::fs::remove_dir_all(&snap_dir);
 }
 
 // ── Hostfs tests ──────────────────────────────────────────────────
