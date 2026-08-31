@@ -32,6 +32,9 @@ scratch_dotnet_aot := "256"
 scratch_node       := "512"
 scratch_dotnet_jit := "768"
 scratch_powershell := "1024"
+scratch_agent        := "1536"
+scratch_agent_slim   := "256"
+scratch_agent_custom := "256"
 
 # ── Build ────────────────────────────────────────────────────────
 
@@ -52,25 +55,38 @@ build *flags:
 
 # ── Rootfs ───────────────────────────────────────────────────────
 
-# Build a rootfs CPIO from a driver Dockerfile (e.g. just build-rootfs python)
+# Build a rootfs CPIO from a driver Dockerfile.
+#
+# Standard runtimes:   just build-rootfs python
+# Custom Dockerfile:   just build-rootfs agent-custom path/to/Dockerfile
 [unix]
-build-rootfs runtime:
+build-rootfs runtime dockerfile="":
     #!/usr/bin/env bash
     set -euo pipefail
-    dockerfile="{{drivers_dir}}/{{runtime}}/Dockerfile"
-    if [ ! -f "$dockerfile" ]; then
-        echo "error: $dockerfile not found" >&2
-        echo "available runtimes:" >&2
-        ls -1 "{{drivers_dir}}" | while read f; do \
-            [ -d "{{drivers_dir}}/$f" ] && echo "  $f"; \
-        done >&2
-        exit 1
+    if [ -n "{{dockerfile}}" ]; then
+        # Custom Dockerfile path provided
+        df="{{dockerfile}}"
+        if [ ! -f "$df" ]; then
+            echo "error: $df not found" >&2
+            exit 1
+        fi
+    else
+        # Standard driver lookup
+        df="{{drivers_dir}}/{{runtime}}/Dockerfile"
+        if [ ! -f "$df" ]; then
+            echo "error: $df not found" >&2
+            echo "available runtimes:" >&2
+            ls -1 "{{drivers_dir}}" | while read f; do \
+                [ -d "{{drivers_dir}}/$f" ] && echo "  $f"; \
+            done >&2
+            exit 1
+        fi
     fi
     image="hluk-{{runtime}}-rootfs"
     output="{{build_dir}}/{{runtime}}-rootfs.cpio"
     mkdir -p "{{build_dir}}"
-    echo "==> Building image $image from $dockerfile"
-    docker build -t "$image" -f "$dockerfile" "{{root_dir}}/"
+    echo "==> Building image $image from $df"
+    docker build -t "$image" -f "$df" "{{root_dir}}/"
     echo "==> Exporting to $output (newc CPIO)"
     tmpdir=$(mktemp -d)
     trap 'rm -rf "$tmpdir"' EXIT
@@ -81,8 +97,11 @@ build-rootfs runtime:
     # virtual mounts — restore minimal versions.
     # 'unikraft' = Unikraft's default hostname (gethostname()).
     printf '127.0.0.1 localhost unikraft\n::1 localhost unikraft\n' > "$tmpdir/etc/hosts"
-    # nsswitch.conf: tell glibc to only check /etc/hosts (no DNS)
-    printf 'hosts: files\n' > "$tmpdir/etc/nsswitch.conf"
+    # nsswitch.conf: files first, then DNS for external resolution
+    printf 'hosts: files dns\n' > "$tmpdir/etc/nsswitch.conf"
+    # resolv.conf: public DNS + single-request (serializes A/AAAA queries;
+    # glibc's parallel A+AAAA mode doesn't work correctly through hostsock)
+    printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\noptions single-request\n' > "$tmpdir/etc/resolv.conf"
     (cd "$tmpdir" && find . | cpio -o -H newc --quiet > "$output")
     echo "==> Done: $output ($(du -h "$output" | cut -f1))"
 
@@ -144,7 +163,11 @@ run runtime script *args:
     rootfs="{{build_dir}}/{{runtime}}-rootfs.cpio"
     if [ ! -f "$rootfs" ]; then
         echo "==> rootfs not found, building first..."
-        just build-rootfs "{{runtime}}"
+        if [ "{{runtime}}" = "agent-custom" ]; then
+            just build-rootfs agent-custom examples/agent/custom/Dockerfile
+        else
+            just build-rootfs "{{runtime}}"
+        fi
     fi
     # Look up per-runtime scratch size
     case "{{runtime}}" in
@@ -156,8 +179,11 @@ run runtime script *args:
         dotnet-aot) scratch={{scratch_dotnet_aot}} ;;
         node)       scratch={{scratch_node}} ;;
         dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
-        powershell) scratch={{scratch_powershell}} ;;
-        *)          scratch=256 ;;
+        powershell)  scratch={{scratch_powershell}} ;;
+        agent)       scratch={{scratch_agent}} ;;
+        agent-slim)   scratch={{scratch_agent_slim}} ;;
+        agent-custom) scratch={{scratch_agent_custom}} ;;
+        *)            scratch=256 ;;
     esac
     just build
     "{{root_dir}}/target/release/hluk" run \
@@ -182,7 +208,11 @@ snapshot-save runtime *args:
     rootfs="{{build_dir}}/{{runtime}}-rootfs.cpio"
     if [ ! -f "$rootfs" ]; then
         echo "==> rootfs not found, building first..."
-        just build-rootfs "{{runtime}}"
+        if [ "{{runtime}}" = "agent-custom" ]; then
+            just build-rootfs agent-custom examples/agent/custom/Dockerfile
+        else
+            just build-rootfs "{{runtime}}"
+        fi
     fi
     # Look up per-runtime scratch size
     case "{{runtime}}" in
@@ -194,8 +224,11 @@ snapshot-save runtime *args:
         dotnet-aot) scratch={{scratch_dotnet_aot}} ;;
         node)       scratch={{scratch_node}} ;;
         dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
-        powershell) scratch={{scratch_powershell}} ;;
-        *)          scratch=256 ;;
+        powershell)  scratch={{scratch_powershell}} ;;
+        agent)       scratch={{scratch_agent}} ;;
+        agent-slim)   scratch={{scratch_agent_slim}} ;;
+        agent-custom) scratch={{scratch_agent_custom}} ;;
+        *)            scratch=256 ;;
     esac
     just build
     mkdir -p "{{snapshot_dir}}"
@@ -254,13 +287,20 @@ bench runtime *mode:
         dotnet-aot) scratch={{scratch_dotnet_aot}} ;;
         node)       scratch={{scratch_node}} ;;
         dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
-        powershell) scratch={{scratch_powershell}} ;;
-        *)          echo "error: unknown runtime '{{runtime}}'" >&2; exit 1 ;;
+        powershell)  scratch={{scratch_powershell}} ;;
+        agent)       scratch={{scratch_agent}} ;;
+        agent-slim)   scratch={{scratch_agent_slim}} ;;
+        agent-custom) scratch={{scratch_agent_custom}} ;;
+        *)            echo "error: unknown runtime '{{runtime}}'" >&2; exit 1 ;;
     esac
 
     if [ ! -f "$rootfs" ]; then
         echo "==> rootfs not found, building first..."
-        just build-rootfs "{{runtime}}"
+        if [ "{{runtime}}" = "agent-custom" ]; then
+            just build-rootfs agent-custom examples/agent/custom/Dockerfile
+        else
+            just build-rootfs "{{runtime}}"
+        fi
     fi
 
     just build
@@ -465,8 +505,11 @@ build-conformance runtime:
     # virtual mounts — restore minimal versions.
     # 'unikraft' = Unikraft's default hostname (gethostname()).
     printf '127.0.0.1 localhost unikraft\n::1 localhost unikraft\n' > "$tmpdir/etc/hosts"
-    # nsswitch.conf: tell glibc to only check /etc/hosts (no DNS)
-    printf 'hosts: files\n' > "$tmpdir/etc/nsswitch.conf"
+    # nsswitch.conf: files first, then DNS for external resolution
+    printf 'hosts: files dns\n' > "$tmpdir/etc/nsswitch.conf"
+    # resolv.conf: public DNS + single-request (serializes A/AAAA queries;
+    # glibc's parallel A+AAAA mode doesn't work correctly through hostsock)
+    printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\noptions single-request\n' > "$tmpdir/etc/resolv.conf"
     (cd "$tmpdir" && find . | cpio -o -H newc --quiet > "$output")
     echo "==> Done: $output ($(du -h "$output" | cut -f1))"
 
@@ -510,8 +553,11 @@ conformance runtime *modules:
         dotnet-aot) scratch={{scratch_dotnet_aot}} ;;
         node)       scratch={{scratch_node}} ;;
         dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
-        powershell) scratch={{scratch_powershell}} ;;
-        *)          scratch=256 ;;
+        powershell)  scratch={{scratch_powershell}} ;;
+        agent)       scratch={{scratch_agent}} ;;
+        agent-slim)   scratch={{scratch_agent_slim}} ;;
+        agent-custom) scratch={{scratch_agent_custom}} ;;
+        *)            scratch=256 ;;
     esac
 
     just build
