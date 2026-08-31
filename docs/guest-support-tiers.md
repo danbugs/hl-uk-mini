@@ -57,7 +57,7 @@ the upstream test suite or benchmark tracking.
 - **Snapshot support** verified by at least one test.
 - **Example script** in `examples/<runtime>/`.
 
-**Current tier 2 runtimes:** Node.js
+**Current tier 2 runtimes:** Node.js, .NET JIT, Bash (BusyBox)
 
 ## Tier 3 — Builds
 
