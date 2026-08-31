@@ -23,8 +23,10 @@ benchmarks_dir  := root_dir / "benchmarks"
 
 # Per-runtime scratch memory (MiB). Must cover rootfs extraction +
 # runtime startup.
+scratch_bash   := "256"
 scratch_python := "256"
 scratch_node   := "512"
+scratch_dotnet_jit := "768"
 
 # ── Build ────────────────────────────────────────────────────────
 
@@ -141,9 +143,11 @@ run runtime script *args:
     fi
     # Look up per-runtime scratch size
     case "{{runtime}}" in
-        python) scratch={{scratch_python}} ;;
-        node)   scratch={{scratch_node}} ;;
-        *)      scratch=256 ;;
+        bash)       scratch={{scratch_bash}} ;;
+        python)     scratch={{scratch_python}} ;;
+        node)       scratch={{scratch_node}} ;;
+        dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
+        *)          scratch=256 ;;
     esac
     just build
     "{{root_dir}}/target/release/hluk" run \
@@ -155,7 +159,7 @@ run runtime script *args:
 [unix]
 run-snapshot snapshot script *args:
     just build
-    "{{root_dir}}/target/release/hluk" snapshot exec \
+    "{{root_dir}}/target/release/hluk" snapshot run \
         {{snapshot}} {{script}} {{args}}
 
 # ── Snapshot ─────────────────────────────────────────────────────
@@ -172,9 +176,11 @@ snapshot-save runtime *args:
     fi
     # Look up per-runtime scratch size
     case "{{runtime}}" in
-        python) scratch={{scratch_python}} ;;
-        node)   scratch={{scratch_node}} ;;
-        *)      scratch=256 ;;
+        bash)       scratch={{scratch_bash}} ;;
+        python)     scratch={{scratch_python}} ;;
+        node)       scratch={{scratch_node}} ;;
+        dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
+        *)          scratch=256 ;;
     esac
     just build
     mkdir -p "{{snapshot_dir}}"
@@ -190,6 +196,12 @@ example-python: (run "python" (examples_dir / "python" / "hello.py"))
 
 # Run the Node.js hello world example
 example-node: (run "node" (examples_dir / "node" / "hello.js"))
+
+# Run the Bash hello world example
+example-bash: (run "bash" (examples_dir / "bash" / "hello.sh"))
+
+# Run the .NET JIT hello world example
+example-dotnet-jit: (run "dotnet-jit" (examples_dir / "dotnet-jit" / "Hello.cs"))
 
 # ── Test ─────────────────────────────────────────────────────────
 
@@ -212,9 +224,10 @@ bench runtime *mode:
     bench_dir="{{benchmarks_dir}}/{{runtime}}"
 
     case "{{runtime}}" in
-        python) scratch={{scratch_python}} ;;
-        node)   scratch={{scratch_node}} ;;
-        *)      echo "error: unknown runtime '{{runtime}}'" >&2; exit 1 ;;
+        python)     scratch={{scratch_python}} ;;
+        node)       scratch={{scratch_node}} ;;
+        dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
+        *)          echo "error: unknown runtime '{{runtime}}'" >&2; exit 1 ;;
     esac
 
     if [ ! -f "$rootfs" ]; then
@@ -461,9 +474,11 @@ conformance runtime *modules:
     fi
 
     case "{{runtime}}" in
-        python) scratch={{scratch_python}} ;;
-        node)   scratch={{scratch_node}} ;;
-        *)      scratch=256 ;;
+        bash)       scratch={{scratch_bash}} ;;
+        python)     scratch={{scratch_python}} ;;
+        node)       scratch={{scratch_node}} ;;
+        dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
+        *)          scratch=256 ;;
     esac
 
     just build
@@ -485,7 +500,7 @@ conformance runtime *modules:
     else
         echo "==> Discovering test modules..."
         # One module per line to avoid output truncation
-        mapfile -t test_modules < <("$hluk" snapshot exec "$snap_dir" --exec \
+        mapfile -t test_modules < <("$hluk" snapshot run "$snap_dir" --exec \
             "import os; d='/usr/local/lib/python3.12/test'; [print(f[:-3]) for f in sorted(os.listdir(d)) if f.startswith('test_') and f.endswith('.py')]" \
             2>/dev/null | tr -d '\r' | grep "^test_" || true)
     fi
@@ -516,7 +531,7 @@ conformance runtime *modules:
         # ignores SIGTERM (some modules spin the hypervisor at 100% CPU).
         inline=$(printf "MODULE='%s'\n%s" "$mod" "$(cat '{{conformance_dir}}/{{runtime}}/run_tests.py')")
 
-        output=$(timeout --kill-after=5 60 "$hluk" snapshot exec "$snap_dir" \
+        output=$(timeout --kill-after=5 60 "$hluk" snapshot run "$snap_dir" \
             --net --exec "$inline" 2>/dev/null || echo "RESULT $mod status=CRASH tests=0 fail=0 error=0 skip=0 time=0")
 
         # Extract the RESULT line

@@ -151,6 +151,178 @@ fn node_inline_code() {
     );
 }
 
+// ── Bash tests ────────────────────────────────────────────────────
+
+#[test]
+fn bash_inline_code() {
+    let rootfs = require_rootfs!("bash");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, "echo 'hluk-bash-ok'").unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("hluk-bash-ok"),
+        "expected guest to print 'hluk-bash-ok', got: {output:?}",
+    );
+}
+
+#[test]
+fn bash_exec_file() {
+    let rootfs = require_rootfs!("bash");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/bash/hello.sh");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, Exec::File(script)).unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("Hello"),
+        "expected hello.sh to produce output containing 'Hello', got: {output:?}",
+    );
+}
+
+#[test]
+fn bash_snapshot_round_trip() {
+    let rootfs = require_rootfs!("bash");
+    let snap_dir = snapshot_dir("bash-snap");
+
+    // Save
+    let (usandbox, _cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    let snap = sandbox.snapshot().unwrap();
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    snap.save(&snap_dir, &tag).unwrap();
+
+    // Restore + run
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
+    let (mut sandbox, cfg2) = restore(snap, Vec::new(), None, None).unwrap();
+    run(&mut sandbox, "echo 'restored-bash-ok'").unwrap();
+    let output = cfg2.drain_output();
+    assert!(
+        output.contains("restored-bash-ok"),
+        "expected restored guest to print 'restored-bash-ok', got: {output:?}",
+    );
+
+    let _ = std::fs::remove_dir_all(&snap_dir);
+}
+
+#[test]
+fn bash_multiple_runs() {
+    let rootfs = require_rootfs!("bash");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, "x=42").unwrap();
+    run(&mut sandbox, "echo \"x=$x\"").unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("x=42"),
+        "expected 'x=42' after multiple runs, got: {output:?}",
+    );
+}
+
+#[test]
+fn bash_coreutils() {
+    let rootfs = require_rootfs!("bash");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/bash/coreutils.sh");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, Exec::File(script)).unwrap();
+    let output = cfg.drain_output();
+
+    // Verify a representative subset of coreutils output
+    assert!(output.contains("=== cat ==="), "missing cat section: {output:?}");
+    assert!(output.contains("alice:admin:login"), "cat didn't print file: {output:?}");
+    assert!(output.contains("=== grep admin ==="), "missing grep section: {output:?}");
+    assert!(output.contains("=== sort ==="), "missing sort section: {output:?}");
+    assert!(output.contains("=== awk table ==="), "missing awk section: {output:?}");
+    assert!(output.contains("=== ls ==="), "missing ls section: {output:?}");
+    assert!(output.contains("=== find *.txt ==="), "missing find section: {output:?}");
+    assert!(output.contains("=== sed s/viewer/readonly/ ==="), "missing sed section: {output:?}");
+    assert!(output.contains("=== seq ==="), "missing seq section: {output:?}");
+    assert!(output.contains("=== hexdump ==="), "missing hexdump section: {output:?}");
+    assert!(output.contains("Done"), "script didn't finish: {output:?}");
+}
+
+// ── .NET JIT tests ───────────────────────────────────────────────
+
+#[test]
+fn dotnet_jit_inline_code() {
+    let rootfs = require_rootfs!("dotnet-jit");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 768, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, "Console.WriteLine(\"hluk-dotnet-ok\");").unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("hluk-dotnet-ok"),
+        "expected guest to print 'hluk-dotnet-ok', got: {output:?}",
+    );
+}
+
+#[test]
+fn dotnet_jit_exec_file() {
+    let rootfs = require_rootfs!("dotnet-jit");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/dotnet-jit/Hello.cs");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 768, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, Exec::File(script)).unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("Hello"),
+        "expected Hello.cs to produce output containing 'Hello', got: {output:?}",
+    );
+}
+
+#[test]
+fn dotnet_jit_snapshot_round_trip() {
+    let rootfs = require_rootfs!("dotnet-jit");
+    let snap_dir = snapshot_dir("dotnet-jit-snap");
+
+    // Save
+    let (usandbox, _cfg) = create_sandbox(&Some(rootfs), &None, 768, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    let snap = sandbox.snapshot().unwrap();
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    snap.save(&snap_dir, &tag).unwrap();
+
+    // Restore + run
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
+    let (mut sandbox, cfg2) = restore(snap, Vec::new(), None, None).unwrap();
+    run(&mut sandbox, "Console.WriteLine(\"restored-dotnet-ok\");").unwrap();
+    let output = cfg2.drain_output();
+    assert!(
+        output.contains("restored-dotnet-ok"),
+        "expected restored guest to print 'restored-dotnet-ok', got: {output:?}",
+    );
+
+    let _ = std::fs::remove_dir_all(&snap_dir);
+}
+
+#[test]
+fn dotnet_jit_multiple_runs() {
+    let rootfs = require_rootfs!("dotnet-jit");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 768, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+
+    // Each dispatch is an independent Roslyn compilation — no shared state.
+    run(&mut sandbox, "Console.WriteLine(\"run1-ok\");").unwrap();
+    let output1 = cfg.drain_output();
+    assert!(
+        output1.contains("run1-ok"),
+        "expected 'run1-ok' from first dispatch, got: {output1:?}",
+    );
+
+    run(&mut sandbox, "Console.WriteLine($\"x={1 + 1}\");").unwrap();
+    let output2 = cfg.drain_output();
+    assert!(
+        output2.contains("x=2"),
+        "expected 'x=2' from second dispatch, got: {output2:?}",
+    );
+}
+
 // ── Hostfs tests ──────────────────────────────────────────────────
 
 #[test]
