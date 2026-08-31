@@ -46,8 +46,8 @@ enum SnapshotCommand {
     /// Boot the guest, then save a snapshot to disk.
     Save(SaveArgs),
 
-    /// Restore a guest from a saved snapshot and dispatch exec commands.
-    Exec(ExecArgs),
+    /// Restore a guest from a saved snapshot and dispatch commands.
+    Run(SnapshotRunArgs),
 }
 
 /// Arguments for `run` — boot the embedded kernel + initrd and dispatch.
@@ -141,9 +141,9 @@ struct SaveArgs {
     ports: Vec<u16>,
 }
 
-/// Arguments for `snapshot exec`.
+/// Arguments for `snapshot run`.
 #[derive(clap::Args)]
-struct ExecArgs {
+struct SnapshotRunArgs {
     /// Path to a saved snapshot directory (OCI Image Layout).
     snapshot: PathBuf,
 
@@ -383,8 +383,8 @@ fn cmd_snapshot_save(args: SaveArgs) -> hyperlight_unikraft::hyperlight_host::Re
     Ok(())
 }
 
-fn cmd_snapshot_exec(
-    args: ExecArgs,
+fn cmd_snapshot_run(
+    args: SnapshotRunArgs,
 ) -> hyperlight_unikraft::hyperlight_host::Result<()> {
     let tag: OciTag = SNAPSHOT_TAG.parse().expect("valid OCI tag");
     let mounts = parse_mounts(&args.mounts);
@@ -422,6 +422,7 @@ fn cmd_snapshot_exec(
 
 // ── Bench helpers ────────────────────────────────────────────────
 
+/// Read a script file and return its source for dispatch.
 fn read_script(path: &std::path::Path) -> hyperlight_unikraft::hyperlight_host::Result<String> {
     std::fs::read_to_string(path).map_err(|e| {
         hyperlight_unikraft::hyperlight_host::HyperlightError::Error(format!(
@@ -742,7 +743,7 @@ fn main() -> hyperlight_unikraft::hyperlight_host::Result<()> {
         Command::Run(args) => cmd_run(args),
         Command::Snapshot(cmd) => match cmd {
             SnapshotCommand::Save(args) => cmd_snapshot_save(args),
-            SnapshotCommand::Exec(args) => cmd_snapshot_exec(args),
+            SnapshotCommand::Run(args) => cmd_snapshot_run(args),
         },
         Command::Bench(cmd) => match cmd {
             BenchCommand::Cold(args) => bench_cold(args),
