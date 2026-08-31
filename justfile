@@ -23,10 +23,15 @@ benchmarks_dir  := root_dir / "benchmarks"
 
 # Per-runtime scratch memory (MiB). Must cover rootfs extraction +
 # runtime startup.
-scratch_bash   := "256"
-scratch_python := "256"
-scratch_node   := "512"
+scratch_c          := "64"
+scratch_rust       := "64"
+scratch_go         := "128"
+scratch_bash       := "256"
+scratch_python     := "256"
+scratch_dotnet_aot := "256"
+scratch_node       := "512"
 scratch_dotnet_jit := "768"
+scratch_powershell := "1024"
 
 # ── Build ────────────────────────────────────────────────────────
 
@@ -65,7 +70,7 @@ build-rootfs runtime:
     output="{{build_dir}}/{{runtime}}-rootfs.cpio"
     mkdir -p "{{build_dir}}"
     echo "==> Building image $image from $dockerfile"
-    docker build -t "$image" -f "$dockerfile" "{{drivers_dir}}/"
+    docker build -t "$image" -f "$dockerfile" "{{root_dir}}/"
     echo "==> Exporting to $output (newc CPIO)"
     tmpdir=$(mktemp -d)
     trap 'rm -rf "$tmpdir"' EXIT
@@ -106,7 +111,7 @@ rebuild-rootfs runtime:
     done
     image="hluk-{{runtime}}-rootfs"
     echo "==> Rebuilding $image (--no-cache)"
-    docker build --no-cache -t "$image" -f "$dockerfile" "{{drivers_dir}}/"
+    docker build --no-cache -t "$image" -f "$dockerfile" "{{root_dir}}/"
     just build-rootfs "{{runtime}}"
     # Rebuild the conformance rootfs too (it inherits the base image)
     conformance_dockerfile="{{conformance_dir}}/{{runtime}}/Dockerfile"
@@ -143,10 +148,15 @@ run runtime script *args:
     fi
     # Look up per-runtime scratch size
     case "{{runtime}}" in
+        c)          scratch={{scratch_c}} ;;
+        rust)       scratch={{scratch_rust}} ;;
+        go)         scratch={{scratch_go}} ;;
         bash)       scratch={{scratch_bash}} ;;
         python)     scratch={{scratch_python}} ;;
+        dotnet-aot) scratch={{scratch_dotnet_aot}} ;;
         node)       scratch={{scratch_node}} ;;
         dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
+        powershell) scratch={{scratch_powershell}} ;;
         *)          scratch=256 ;;
     esac
     just build
@@ -176,10 +186,15 @@ snapshot-save runtime *args:
     fi
     # Look up per-runtime scratch size
     case "{{runtime}}" in
+        c)          scratch={{scratch_c}} ;;
+        rust)       scratch={{scratch_rust}} ;;
+        go)         scratch={{scratch_go}} ;;
         bash)       scratch={{scratch_bash}} ;;
         python)     scratch={{scratch_python}} ;;
+        dotnet-aot) scratch={{scratch_dotnet_aot}} ;;
         node)       scratch={{scratch_node}} ;;
         dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
+        powershell) scratch={{scratch_powershell}} ;;
         *)          scratch=256 ;;
     esac
     just build
@@ -203,6 +218,13 @@ example-bash: (run "bash" (examples_dir / "bash" / "hello.sh"))
 # Run the .NET JIT hello world example
 example-dotnet-jit: (run "dotnet-jit" (examples_dir / "dotnet-jit" / "Hello.cs"))
 
+# Run the PowerShell hello world example
+example-powershell: (run "powershell" (examples_dir / "powershell" / "hello.ps1"))
+
+# Compiled runtime examples (C, Rust, Go, dotnet-aot) require compiling
+# on the host first.  See examples/<runtime>/README.md for instructions,
+# then: just run <runtime> ./hello
+
 # ── Test ─────────────────────────────────────────────────────────
 
 # Run integration tests
@@ -224,9 +246,15 @@ bench runtime *mode:
     bench_dir="{{benchmarks_dir}}/{{runtime}}"
 
     case "{{runtime}}" in
+        c)          scratch={{scratch_c}} ;;
+        rust)       scratch={{scratch_rust}} ;;
+        go)         scratch={{scratch_go}} ;;
+        bash)       scratch={{scratch_bash}} ;;
         python)     scratch={{scratch_python}} ;;
+        dotnet-aot) scratch={{scratch_dotnet_aot}} ;;
         node)       scratch={{scratch_node}} ;;
         dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
+        powershell) scratch={{scratch_powershell}} ;;
         *)          echo "error: unknown runtime '{{runtime}}'" >&2; exit 1 ;;
     esac
 
@@ -474,10 +502,15 @@ conformance runtime *modules:
     fi
 
     case "{{runtime}}" in
+        c)          scratch={{scratch_c}} ;;
+        rust)       scratch={{scratch_rust}} ;;
+        go)         scratch={{scratch_go}} ;;
         bash)       scratch={{scratch_bash}} ;;
         python)     scratch={{scratch_python}} ;;
+        dotnet-aot) scratch={{scratch_dotnet_aot}} ;;
         node)       scratch={{scratch_node}} ;;
         dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
+        powershell) scratch={{scratch_powershell}} ;;
         *)          scratch=256 ;;
     esac
 
@@ -500,7 +533,7 @@ conformance runtime *modules:
     else
         echo "==> Discovering test modules..."
         # One module per line to avoid output truncation
-        mapfile -t test_modules < <("$hluk" snapshot run "$snap_dir" --exec \
+        mapfile -t test_modules < <("$hluk" snapshot run "$snap_dir" --net --exec \
             "import os; d='/usr/local/lib/python3.12/test'; [print(f[:-3]) for f in sorted(os.listdir(d)) if f.startswith('test_') and f.endswith('.py')]" \
             2>/dev/null | tr -d '\r' | grep "^test_" || true)
     fi
