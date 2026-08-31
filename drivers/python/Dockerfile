@@ -24,6 +24,11 @@ COPY --from=build /lib/x86_64-linux-gnu/libm.so.6 /lib/x86_64-linux-gnu/libm.so.
 COPY --from=build /lib64/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
 COPY --from=build /usr/lib/x86_64-linux-gnu/libz.so.1 /usr/lib/x86_64-linux-gnu/libz.so.1
 
+# NSS + resolver — needed for DNS resolution (glibc loads these dynamically)
+COPY --from=build /usr/lib/x86_64-linux-gnu/libnss_dns.so.2  /usr/lib/x86_64-linux-gnu/libnss_dns.so.2
+COPY --from=build /usr/lib/x86_64-linux-gnu/libnss_files.so.2 /usr/lib/x86_64-linux-gnu/libnss_files.so.2
+COPY --from=build /usr/lib/x86_64-linux-gnu/libresolv.so.2   /usr/lib/x86_64-linux-gnu/libresolv.so.2
+
 # Python interpreter binary (keep at /usr/local/bin so RPATH ../lib resolves)
 COPY --from=build /usr/local/bin/python3.12 /usr/local/bin/python3
 
