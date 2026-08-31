@@ -72,7 +72,7 @@ entry point for new runtimes.
 - **Example script** in `examples/<runtime>/` (recommended but not
   required).
 
-**Current tier 3 runtimes:** (none)
+**Current tier 3 runtimes:** C, Rust, Go, .NET Native AOT, PowerShell
 
 ## Promotion and Demotion
 

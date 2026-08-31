@@ -33,8 +33,7 @@ Produces a compact summary table at the end, plus a machine-readable
 
 **RSS:** The CLI reports `RssAnon` from `/proc/self/status` (Linux) — anonymous
 (private) memory only. This is the density-relevant metric: it scales linearly
-with VM count and is the closest analog to Windows' `PrivateMemorySize64`
-(used by vmm-benchmarks). Values may still differ from Windows due to how guest
+with VM count and is the closest analog to Windows' `PrivateMemorySize64`. Values may still differ from Windows due to how guest
 memory is backed (anonymous mmap on Linux vs file-backed mapping on Windows).
 
 **Snapshot size:** Reported as total bytes on disk (recursive `stat` of the
@@ -44,8 +43,6 @@ snapshot directory). Same value on all platforms.
 
 - [ ] Integrate [pyperformance](https://pyperformance.readthedocs.io/) for
       standardized Python benchmarks alongside custom workloads.
-- [ ] Enable CI benchmark workflow (`.github/workflows/benchmarks.yml`) once
-      tested on a KVM-capable runner.
-- [ ] Add Node.js workloads when the Node.js driver is ready.
+- [ ] Bench other runtimes.
 
 [github-action-benchmark]: https://github.com/benchmark-action/github-action-benchmark
