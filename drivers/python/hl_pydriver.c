@@ -164,7 +164,7 @@ int main(int argc, char **argv, char **envp)
 		"outl %%eax, %%dx\n\t"
 		"cli\n\t"
 		"hlt\n\t"
-		: : "r"(g_dispatch_entry) : "rax", "rdx"
+		: : "r"(g_dispatch_entry) : "rax", "rdx", "memory"
 	);
 	__builtin_unreachable();
 }
