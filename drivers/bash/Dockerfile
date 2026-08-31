@@ -50,8 +50,8 @@ RUN make -j$(nproc) EXTRA_CFLAGS="-fPIE" EXTRA_LDFLAGS="-pie" && \
 WORKDIR /src
 
 # Preserve directory layout so #include "../hl_fc.h" resolves
-COPY hl_fc.h /src/drivers/hl_fc.h
-COPY bash/hl_bashdriver.c /src/drivers/bash/hl_bashdriver.c
+COPY drivers/hl_fc.h /src/drivers/hl_fc.h
+COPY drivers/bash/hl_bashdriver.c /src/drivers/bash/hl_bashdriver.c
 
 RUN gcc -O2 -Wall -Wextra -Wno-unused-parameter \
         -static-pie -fPIE \

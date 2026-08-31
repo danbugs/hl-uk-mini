@@ -14,19 +14,19 @@ FROM mcr.microsoft.com/dotnet/sdk:9.0-alpine AS build
 
 # Build the .NET dispatch server (includes Roslyn for in-guest compilation)
 WORKDIR /src
-COPY dotnet-jit/HlDotnetDispatch/ ./
+COPY drivers/dotnet-jit/HlDotnetDispatch/ ./
 RUN dotnet publish -c Release -r linux-musl-x64 --self-contained -o /dispatch
 
 # Compile the C driver
 RUN apk add --no-cache gcc musl-dev
 
 # Preserve directory layout so #include "../hl_fc.h" resolves
-COPY hl_fc.h /drivers/hl_fc.h
-COPY dotnet-jit/hl_dotnetdriver.c /drivers/dotnet-jit/hl_dotnetdriver.c
+COPY drivers/hl_fc.h /src/drivers/hl_fc.h
+COPY drivers/dotnet-jit/hl_dotnetdriver.c /src/drivers/dotnet-jit/hl_dotnetdriver.c
 
 RUN gcc -O2 -Wall -Wextra -Wno-unused-parameter \
         -static-pie -fPIE \
-        -o /hl_dotnetdriver /drivers/dotnet-jit/hl_dotnetdriver.c
+        -o /hl_dotnetdriver /src/drivers/dotnet-jit/hl_dotnetdriver.c
 
 # Minimal rootfs: .NET dispatch server + driver + musl
 FROM scratch

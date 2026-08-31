@@ -3,8 +3,8 @@ FROM node:21-alpine AS build
 RUN apk add --no-cache gcc musl-dev
 
 # Preserve directory layout so #include "../hl_fc.h" resolves
-COPY hl_fc.h /src/drivers/hl_fc.h
-COPY node/hl_nodedriver.c /src/drivers/node/hl_nodedriver.c
+COPY drivers/hl_fc.h /src/drivers/hl_fc.h
+COPY drivers/node/hl_nodedriver.c /src/drivers/node/hl_nodedriver.c
 
 RUN gcc -O2 -Wall -Wextra -Wno-unused-parameter \
         -static-pie -fPIE \

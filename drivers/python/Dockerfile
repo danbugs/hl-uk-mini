@@ -7,8 +7,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 # Preserve directory layout so #include "../hl_fc.h" resolves
-COPY hl_fc.h /src/drivers/hl_fc.h
-COPY python/hl_pydriver.c /src/drivers/python/hl_pydriver.c
+COPY drivers/hl_fc.h /src/drivers/hl_fc.h
+COPY drivers/python/hl_pydriver.c /src/drivers/python/hl_pydriver.c
 
 RUN gcc -O2 -Wall -Wextra -Wno-unused-parameter \
         $(python3-config --cflags --embed) \
@@ -44,7 +44,7 @@ COPY --from=build /etc/ld.so.cache /etc/ld.so.cache
 COPY --from=build /tmp /tmp
 
 # Fix sys.executable for subprocess support (see sitecustomize.py)
-COPY python/sitecustomize.py /usr/local/lib/python3.12/sitecustomize.py
+COPY drivers/python/sitecustomize.py /usr/local/lib/python3.12/sitecustomize.py
 
 # Hyperlight driver
 COPY --from=build /hl_pydriver /usr/local/bin/hl_pydriver
