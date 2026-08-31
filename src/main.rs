@@ -307,6 +307,40 @@ fn parse_net_policy(
     Ok((policy, listen))
 }
 
+/// Resolve script/exec args into an Exec value.
+///
+/// Text files are passed as scripts.  Compiled binaries are rejected
+/// with a helpful error — use `--mount` + `--exec` for those.
+fn resolve_exec(
+    script: Option<PathBuf>,
+    exec: Option<String>,
+) -> hyperlight_unikraft::hyperlight_host::Result<Option<Exec>> {
+    match (script, exec) {
+        (Some(path), _) => {
+            // Verify the file is valid UTF-8 (i.e. a script, not a binary)
+            if std::fs::read_to_string(&path).is_err() && path.exists() {
+                let dir = path.parent()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| ".".into());
+                let name = path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "binary".into());
+                return Err(
+                    hyperlight_unikraft::hyperlight_host::HyperlightError::Error(format!(
+                        "{} is a compiled binary, not a script.\n\
+                         To run compiled binaries, mount a directory containing the binary:\n  \
+                         hluk run --initrd <rootfs.cpio> --mount {dir}:/mnt/bin --exec /mnt/bin/{name}",
+                        path.display(),
+                    )),
+                );
+            }
+            Ok(Some(Exec::File(path)))
+        }
+        (_, Some(code)) => Ok(Some(Exec::Code(code))),
+        _ => Ok(None),
+    }
+}
+
 // ── Commands ─────────────────────────────────────────────────────
 
 fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
@@ -314,6 +348,9 @@ fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
     let (policy, listen) =
         parse_net_policy(args.net, &args.net_allow, &args.net_block, &args.ports)
             .map_err(hyperlight_unikraft::hyperlight_host::HyperlightError::Error)?;
+
+    let exec = resolve_exec(args.script, args.exec)?;
+
     let (usandbox, _config) = create_sandbox(
         &args.initrd,
         &args.entry,
@@ -327,16 +364,12 @@ fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
     let mut sandbox = init(usandbox)?;
     info!(elapsed_ms = t.elapsed().as_secs_f64() * 1000.0, "init");
 
-    let exec = match (args.script, args.exec) {
-        (Some(path), _) => Some(Exec::File(path)),
-        (_, Some(code)) => Some(Exec::Code(code)),
-        _ => None,
-    };
     if let Some(exec) = exec {
         let t = Instant::now();
         run(&mut sandbox, exec)?;
         info!(elapsed_ms = t.elapsed().as_secs_f64() * 1000.0, "exec");
     }
+
     Ok(())
 }
 
@@ -407,11 +440,7 @@ fn cmd_snapshot_run(
         "restored from snapshot",
     );
 
-    let exec = match (args.script, args.exec) {
-        (Some(path), _) => Some(Exec::File(path)),
-        (_, Some(code)) => Some(Exec::Code(code)),
-        _ => None,
-    };
+    let exec = resolve_exec(args.script, args.exec)?;
     if let Some(exec) = exec {
         let t = Instant::now();
         run(&mut sandbox, exec)?;
