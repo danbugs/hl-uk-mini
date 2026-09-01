@@ -135,6 +135,8 @@ pub struct GuestConfig {
     pub listen_ports: Option<ListenPorts>,
     /// Captured guest stdout — accumulated by the HostPrint callback.
     output: Arc<Mutex<String>>,
+    /// NUL-separated KEY=VALUE pairs for guest env vars.
+    env_str: Arc<Mutex<String>>,
 }
 
 impl GuestConfig {
@@ -148,6 +150,48 @@ impl GuestConfig {
         hyperlight_common::layout::SCRATCH_TOP_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1
+    }
+
+    /// Set environment variables to pass to the guest.
+    ///
+    /// Call before [`init`] — the guest's boot sequence queries the
+    /// `GetEnvVars` host function and injects these into its process
+    /// environment via `putenv()`.
+    ///
+    /// Can also be called between dispatches (without restore) to
+    /// update the guest's environment.  Each dispatch calls
+    /// `hl_env_refresh()` which re-queries the host and calls
+    /// `setenv()` for every returned variable.
+    ///
+    /// **Caveat — full replace, not merge**: This replaces the entire
+    /// env var set, not merging with the previous one.  Variables
+    /// removed from the host side will **not** be unset in the guest's
+    /// glibc `environ` — `hl_env_refresh()` only calls `setenv()`,
+    /// never `unsetenv()`.  Stale variables from earlier dispatches
+    /// linger in the guest until it is restored from a snapshot.
+    ///
+    /// ```no_run
+    /// # use hyperlight_unikraft::create_sandbox;
+    /// let (usandbox, cfg) = create_sandbox(&None, &None, 256, Vec::new(), None, None).unwrap();
+    /// cfg.set_env_vars(&[("MY_VAR", "hello"), ("DEBUG", "1")]).unwrap();
+    /// // now call init(usandbox)…
+    /// ```
+    pub fn set_env_vars(&self, vars: &[(&str, &str)]) -> hyperlight_host::Result<()> {
+        let mut s = String::new();
+        for (k, v) in vars {
+            if k.starts_with("HL_") {
+                return Err(hyperlight_host::HyperlightError::Error(format!(
+                    "environment variable key '{}' uses reserved HL_ prefix",
+                    k,
+                )));
+            }
+            s.push_str(k);
+            s.push('=');
+            s.push_str(v);
+            s.push('\0');
+        }
+        *self.env_str.lock().unwrap() = s;
+        Ok(())
     }
 
     /// Register host functions on any [`Registerable`] target.
@@ -220,6 +264,37 @@ impl GuestConfig {
             "GetHostFsChunkSize",
             || -> hyperlight_host::Result<u64> {
                 Ok(hostfs::CHUNK as u64)
+            },
+        )?;
+
+        // ── Environment variables ─────────────────────────────────
+        let env_str = self.env_str.clone();
+        target.register_host_function(
+            "GetEnvVars",
+            move || -> hyperlight_host::Result<String> {
+                let raw = env_str.lock().unwrap().clone();
+                // Filter out HL_* vars — those are internal kernel
+                // addresses that must not leak to guest user code.
+                let mut filtered = String::new();
+                for entry in raw.split('\0') {
+                    if entry.is_empty() { continue; }
+                    if entry.starts_with("HL_") { continue; }
+                    filtered.push_str(entry);
+                    filtered.push('\0');
+                }
+                Ok(filtered)
+            },
+        )?;
+
+        // ── Stdin ─────────────────────────────────────────────────
+        target.register_host_function(
+            "ReadStdin",
+            move || -> hyperlight_host::Result<String> {
+                use std::io::Read;
+                let mut data = vec![0u8; 4096];
+                let n = std::io::stdin().read(&mut data).unwrap_or(0);
+                data.truncate(n);
+                Ok(String::from_utf8_lossy(&data).into_owned())
             },
         )?;
 
@@ -410,6 +485,7 @@ pub fn create_sandbox(
         network,
         listen_ports,
         output: Arc::new(Mutex::new(String::new())),
+        env_str: Arc::new(Mutex::new(String::new())),
     };
 
     config.register(&mut usandbox)?;
@@ -507,6 +583,7 @@ pub fn restore(
         network,
         listen_ports,
         output: Arc::new(Mutex::new(String::new())),
+        env_str: Arc::new(Mutex::new(String::new())),
     };
     let mut hf = HostFunctions::default();
     config.register(&mut hf)?;
@@ -532,6 +609,7 @@ mod tests {
             network: None,
             listen_ports: None,
             output: Arc::new(Mutex::new(String::new())),
+            env_str: Arc::new(Mutex::new(String::new())),
         };
         assert_eq!(cfg.paging_budget(), 192 * 1024 * 1024);
     }
