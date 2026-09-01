@@ -657,3 +657,71 @@ clean-rootfs:
 [windows]
 clean-rootfs:
     if (Test-Path "{{build_dir}}") { Remove-Item -Recurse -Force "{{build_dir}}" }
+
+# Remove all snapshots
+[unix]
+clean-snapshots:
+    rm -rf "{{snapshot_dir}}"
+    @echo "==> All snapshots removed"
+
+[windows]
+clean-snapshots:
+    if (Test-Path "{{snapshot_dir}}") { Remove-Item -Recurse -Force "{{snapshot_dir}}" }
+
+# Build all rootfs images (uses Docker cache — fast if nothing changed).
+# For a clean rebuild of everything, use `just rebuild-all-rootfs`.
+[unix]
+build-all-rootfs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for d in "{{drivers_dir}}"/*/; do
+        runtime=$(basename "$d")
+        if [ -f "$d/Dockerfile" ]; then
+            echo ""
+            echo "════════════════════════════════════════════"
+            echo "  Building rootfs: $runtime"
+            echo "════════════════════════════════════════════"
+            just build-rootfs "$runtime"
+        fi
+    done
+    # agent-custom lives outside drivers/
+    if [ -f "{{root_dir}}/examples/agent/custom/Dockerfile" ]; then
+        echo ""
+        echo "════════════════════════════════════════════"
+        echo "  Building rootfs: agent-custom"
+        echo "════════════════════════════════════════════"
+        just build-rootfs agent-custom examples/agent/custom/Dockerfile
+    fi
+
+# Rebuild all rootfs images from scratch (--no-cache, pulls fresh
+# base images, invalidates snapshots).
+[unix]
+rebuild-all-rootfs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for d in "{{drivers_dir}}"/*/; do
+        runtime=$(basename "$d")
+        if [ -f "$d/Dockerfile" ]; then
+            echo ""
+            echo "════════════════════════════════════════════"
+            echo "  Rebuilding rootfs: $runtime"
+            echo "════════════════════════════════════════════"
+            just rebuild-rootfs "$runtime"
+        fi
+    done
+    # agent-custom lives outside drivers/ — rebuild manually
+    if [ -f "{{root_dir}}/examples/agent/custom/Dockerfile" ]; then
+        echo ""
+        echo "════════════════════════════════════════════"
+        echo "  Rebuilding rootfs: agent-custom"
+        echo "════════════════════════════════════════════"
+        df="{{root_dir}}/examples/agent/custom/Dockerfile"
+        for img in $(grep '^FROM ' "$df" | awk '{print $2}' | sort -u); do
+            if docker pull "$img" 2>/dev/null; then
+                echo "==> Pulled $img"
+            fi
+        done
+        docker build --no-cache -t hluk-agent-custom-rootfs -f "$df" "{{root_dir}}/"
+        just build-rootfs agent-custom "$df"
+        rm -rf "{{snapshot_dir}}/agent-custom"
+    fi
