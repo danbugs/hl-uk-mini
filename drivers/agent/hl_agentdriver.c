@@ -36,6 +36,7 @@
 #include <string.h>
 
 #include "../hl_fc.h"
+#include "../hl_env.h"
 
 /* ── State ─────────────────────────────────────────────────────── */
 
@@ -66,12 +67,48 @@ static inline void wrmsr_fsbase(uint64_t v)
 	__asm__ volatile("wrmsr" : : "c"(0xC0000100), "a"(lo), "d"(hi));
 }
 
+/* ── Agent env visitor ────────────────────────────────────────── */
+
+/*
+ * Same as the py_env_visitor — build os.environ assignments for
+ * the Python interpreter.
+ */
+struct agent_env_buf {
+	char *buf;
+	size_t pos;
+	size_t cap;
+};
+
+static void agent_env_visitor(const char *key, const char *val, void *ctx)
+{
+	struct agent_env_buf *eb = (struct agent_env_buf *)ctx;
+	size_t need = 16 + strlen(key) + strlen(val) + 8;
+	if (eb->pos + need >= eb->cap)
+		return;
+	eb->pos += snprintf(eb->buf + eb->pos, eb->cap - eb->pos,
+			    "os.environ[\"%s\"]=\"%s\"\n", key, val);
+}
+
 /* ── Dispatch callback ─────────────────────────────────────────── */
 
 static int agent_dispatch(const uint8_t *fc, size_t fc_len)
 {
 	if (g_py_fsbase)
 		wrmsr_fsbase(g_py_fsbase);
+
+	/* Refresh env vars — updates glibc environ and builds a
+	 * Python prefix that sets os.environ for each host var. */
+	char env_prefix[4096];
+	struct agent_env_buf eb = { env_prefix, 0, sizeof(env_prefix) };
+	hl_env_refresh(agent_env_visitor, &eb);
+
+	/* Prepend "import os\n" if we have any env assignments */
+	char full_prefix[4096 + 16];
+	size_t prefix_len = 0;
+	if (eb.pos > 0) {
+		prefix_len = snprintf(full_prefix, sizeof(full_prefix),
+				      "import os\n%.*s", (int)eb.pos, env_prefix);
+	}
 
 	/* Extract the code string from the FunctionCall FlatBuffer */
 	size_t code_len;
@@ -80,17 +117,20 @@ static int agent_dispatch(const uint8_t *fc, size_t fc_len)
 		return -1;
 
 	/* NUL-terminate — fc_arg0_string returns a non-terminated slice */
+	size_t total = prefix_len + code_len;
 	char stack_buf[4096];
 	char *buf;
-	if (code_len < sizeof(stack_buf)) {
+	if (total < sizeof(stack_buf)) {
 		buf = stack_buf;
 	} else {
-		buf = malloc(code_len + 1);
+		buf = malloc(total + 1);
 		if (!buf)
 			return -1;
 	}
-	memcpy(buf, code, code_len);
-	buf[code_len] = '\0';
+	if (prefix_len > 0)
+		memcpy(buf, full_prefix, prefix_len);
+	memcpy(buf + prefix_len, code, code_len);
+	buf[total] = '\0';
 
 	int rc = PyRun_SimpleString(buf);
 
@@ -112,13 +152,8 @@ int main(int argc, char **argv, char **envp)
 
 	/* Parse kernel addresses from env vars injected by
 	 * dispatch.c's uk_late_initcall. */
-	for (char **p = envp; p && *p; p++) {
-		if (!strncmp(*p, "HL_DISPATCH_CALLBACK_PTR=", 25))
-			g_callback_slot = (hl_dispatch_fn_t *)
-				hl_parse_hex(*p + 25);
-		else if (!strncmp(*p, "HL_DISPATCH_ENTRY=", 18))
-			g_dispatch_entry = hl_parse_hex(*p + 18);
-	}
+	hl_env_init(envp, &g_callback_slot, &g_dispatch_entry);
+	hl_env_clean_reserved();
 
 	if (!g_callback_slot || !g_dispatch_entry) {
 		fprintf(stderr,

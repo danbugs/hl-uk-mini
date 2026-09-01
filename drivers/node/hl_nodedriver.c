@@ -42,6 +42,7 @@
 #include <stdint.h>
 
 #include "../hl_fc.h"
+#include "../hl_env.h"
 
 /* ── State ─────────────────────────────────────────────────────── */
 
@@ -50,22 +51,68 @@ static uint64_t g_dispatch_entry;
 static int g_pipe_to_node;    /* parent writes code here */
 static int g_pipe_from_node;  /* parent reads ack here */
 
+/* ── Node env visitor ─────────────────────────────────────────── */
+
+/*
+ * Build `process.env["KEY"]="VALUE";\n` lines.  The persistent
+ * Node child was spawned at boot and doesn't see setenv changes
+ * in the parent.  Prepending process.env assignments to the
+ * eval'd code is the only way to propagate host env vars.
+ */
+struct node_env_buf {
+	char *buf;
+	size_t pos;
+	size_t cap;
+};
+
+static void node_env_visitor(const char *key, const char *val, void *ctx)
+{
+	struct node_env_buf *eb = (struct node_env_buf *)ctx;
+	/* process.env["KEY"]="VALUE";\n */
+	size_t need = 16 + strlen(key) + strlen(val) + 8;
+	if (eb->pos + need >= eb->cap)
+		return;
+	eb->pos += snprintf(eb->buf + eb->pos, eb->cap - eb->pos,
+			    "process.env[\"%s\"]=\"%s\";\n", key, val);
+}
+
 /* ── Dispatch callback ─────────────────────────────────────────── */
 
 static int node_dispatch(const uint8_t *fc, size_t fc_len)
 {
+	/* Refresh env vars — updates glibc environ and builds
+	 * process.env assignments for the Node child. */
+	char env_prefix[4096];
+	struct node_env_buf eb = { env_prefix, 0, sizeof(env_prefix) };
+	hl_env_refresh(node_env_visitor, &eb);
+
 	/* Extract the code string from the FunctionCall FlatBuffer */
 	size_t code_len;
 	const char *code = fc_arg0_string(fc, fc_len, &code_len);
 	if (!code)
 		return -1;
 
-	/* Send length (8 bytes LE) + code to the child */
-	uint64_t len64 = (uint64_t)code_len;
+	/* Send length (8 bytes LE) + env prefix + code to the child */
+	uint64_t len64 = (uint64_t)(eb.pos + code_len);
 	if (write(g_pipe_to_node, &len64, 8) != 8) {
 		fprintf(stderr, "hl_nodedriver: pipe write (len) failed\n");
 		fflush(stderr);
 		return -1;
+	}
+	/* Write env prefix first, then user code */
+	if (eb.pos > 0) {
+		const char *ep = env_prefix;
+		size_t erem = eb.pos;
+		while (erem > 0) {
+			ssize_t n = write(g_pipe_to_node, ep, erem);
+			if (n <= 0) {
+				fprintf(stderr, "hl_nodedriver: pipe write (env) failed\n");
+				fflush(stderr);
+				return -1;
+			}
+			ep += n;
+			erem -= n;
+		}
 	}
 	const char *p = code;
 	size_t remaining = code_len;
@@ -155,13 +202,8 @@ int main(int argc, char **argv, char **envp)
 	(void)argv;
 
 	/* Parse kernel addresses from env vars */
-	for (char **p = envp; p && *p; p++) {
-		if (!strncmp(*p, "HL_DISPATCH_CALLBACK_PTR=", 25))
-			g_callback_slot = (hl_dispatch_fn_t *)
-				hl_parse_hex(*p + 25);
-		else if (!strncmp(*p, "HL_DISPATCH_ENTRY=", 18))
-			g_dispatch_entry = hl_parse_hex(*p + 18);
-	}
+	hl_env_init(envp, &g_callback_slot, &g_dispatch_entry);
+	hl_env_clean_reserved();
 
 	if (!g_callback_slot || !g_dispatch_entry) {
 		fprintf(stderr,

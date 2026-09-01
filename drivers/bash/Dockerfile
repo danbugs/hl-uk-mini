@@ -51,6 +51,7 @@ WORKDIR /src
 
 # Preserve directory layout so #include "../hl_fc.h" resolves
 COPY drivers/hl_fc.h /src/drivers/hl_fc.h
+COPY drivers/hl_env.h /src/drivers/hl_env.h
 COPY drivers/bash/hl_bashdriver.c /src/drivers/bash/hl_bashdriver.c
 
 RUN gcc -O2 -Wall -Wextra -Wno-unused-parameter \

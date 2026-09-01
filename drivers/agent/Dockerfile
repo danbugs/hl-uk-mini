@@ -101,6 +101,7 @@ RUN pip install --no-cache-dir \
 # ── Compile agent driver ────────────────────────────────────────
 # Preserve directory layout so #include "../hl_fc.h" resolves
 COPY drivers/hl_fc.h           /src/drivers/hl_fc.h
+COPY drivers/hl_env.h /src/drivers/hl_env.h
 COPY drivers/agent/hl_agentdriver.c /src/drivers/agent/hl_agentdriver.c
 
 RUN gcc -O2 -Wall -Wextra -Wno-unused-parameter \

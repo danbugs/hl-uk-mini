@@ -18,6 +18,7 @@ FROM alpine:3.20 AS build-driver
 RUN apk add --no-cache gcc musl-dev
 
 COPY drivers/hl_fc.h /src/drivers/hl_fc.h
+COPY drivers/hl_env.h /src/drivers/hl_env.h
 COPY drivers/powershell/hl_pwshdriver.c /src/drivers/powershell/hl_pwshdriver.c
 RUN gcc -O2 -Wall -Wextra -Wno-unused-parameter \
         -static-pie -fPIE \

@@ -38,6 +38,7 @@
 #include <stdint.h>
 
 #include "../hl_fc.h"
+#include "../hl_env.h"
 
 /* ── State ─────────────────────────────────────────────────────── */
 
@@ -45,6 +46,61 @@ static hl_dispatch_fn_t *g_callback_slot;
 static uint64_t g_dispatch_entry;
 static int g_pipe_to_dotnet;    /* parent writes payload here */
 static int g_pipe_from_dotnet;  /* parent reads ack here */
+
+/* ── .NET env visitor ──────────────────────────────────────────── */
+
+/*
+ * Append an `Environment.SetEnvironmentVariable("KEY", "VALUE");`
+ * line to a buffer.  The persistent .NET child was spawned at boot
+ * and doesn't see setenv changes in the parent — prepending env
+ * assignments to the compiled C# code is the only way to propagate
+ * host env vars to the Roslyn-executed scripts.
+ *
+ * RoslynCompiler.cs already prepends `using System;`, so
+ * `Environment.SetEnvironmentVariable` resolves without a full
+ * namespace qualifier.
+ */
+struct dotnet_env_buf {
+	char *buf;
+	size_t pos;
+	size_t cap;
+};
+
+static void dotnet_env_visitor(const char *key, const char *val, void *ctx)
+{
+	struct dotnet_env_buf *db = (struct dotnet_env_buf *)ctx;
+	/* Worst case: Environment.SetEnvironmentVariable("...","...");\n */
+	size_t need = 48 + strlen(key) + strlen(val) * 2 + 8;
+	if (db->pos + need >= db->cap)
+		return; /* buffer full — skip */
+
+	db->pos += snprintf(db->buf + db->pos, db->cap - db->pos,
+			    "Environment.SetEnvironmentVariable(\"");
+	/* Key — escape quotes and backslashes */
+	for (const char *p = key; *p && db->pos < db->cap - 4; p++) {
+		if (*p == '"' || *p == '\\')
+			db->buf[db->pos++] = '\\';
+		db->buf[db->pos++] = *p;
+	}
+	if (db->pos + 4 < db->cap) {
+		db->buf[db->pos++] = '"';
+		db->buf[db->pos++] = ',';
+		db->buf[db->pos++] = ' ';
+		db->buf[db->pos++] = '"';
+	}
+	/* Value — escape quotes and backslashes */
+	for (const char *p = val; *p && db->pos < db->cap - 4; p++) {
+		if (*p == '"' || *p == '\\')
+			db->buf[db->pos++] = '\\';
+		db->buf[db->pos++] = *p;
+	}
+	if (db->pos + 4 < db->cap) {
+		db->buf[db->pos++] = '"';
+		db->buf[db->pos++] = ')';
+		db->buf[db->pos++] = ';';
+		db->buf[db->pos++] = '\n';
+	}
+}
 
 /* ── Dispatch callback ─────────────────────────────────────────── */
 
@@ -56,10 +112,29 @@ static int dotnet_dispatch(const uint8_t *fc, size_t fc_len)
 	if (!code)
 		return -1;
 
-	/* Send length (8 bytes LE) + payload to the child */
-	uint64_t len64 = (uint64_t)code_len;
+	/* Build env var prefix for the compiled C# code.
+	 * Also refreshes glibc environ (for the parent process). */
+	char env_prefix[4096];
+	struct dotnet_env_buf db = { env_prefix, 0, sizeof(env_prefix) };
+	hl_env_refresh(dotnet_env_visitor, &db);
+	env_prefix[db.pos] = '\0';
+
+	/* Send length (8 bytes LE) + env prefix + code to the child */
+	uint64_t len64 = (uint64_t)(db.pos + code_len);
 	if (write(g_pipe_to_dotnet, &len64, 8) != 8)
 		return -1;
+	/* Write env prefix first, then the user code */
+	if (db.pos > 0) {
+		const char *ep = env_prefix;
+		size_t erem = db.pos;
+		while (erem > 0) {
+			ssize_t n = write(g_pipe_to_dotnet, ep, erem);
+			if (n <= 0)
+				return -1;
+			ep += n;
+			erem -= n;
+		}
+	}
 	const char *p = code;
 	size_t remaining = code_len;
 	while (remaining > 0) {
@@ -87,13 +162,8 @@ int main(int argc, char **argv, char **envp)
 	(void)argv;
 
 	/* Parse kernel addresses from env vars */
-	for (char **p = envp; p && *p; p++) {
-		if (!strncmp(*p, "HL_DISPATCH_CALLBACK_PTR=", 25))
-			g_callback_slot = (hl_dispatch_fn_t *)
-				hl_parse_hex(*p + 25);
-		else if (!strncmp(*p, "HL_DISPATCH_ENTRY=", 18))
-			g_dispatch_entry = hl_parse_hex(*p + 18);
-	}
+	hl_env_init(envp, &g_callback_slot, &g_dispatch_entry);
+	hl_env_clean_reserved();
 
 	if (!g_callback_slot || !g_dispatch_entry) {
 		fprintf(stderr,

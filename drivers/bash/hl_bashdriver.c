@@ -40,6 +40,7 @@
 #include <stdint.h>
 
 #include "../hl_fc.h"
+#include "../hl_env.h"
 
 /* ── State ─────────────────────────────────────────────────────── */
 
@@ -48,10 +49,40 @@ static uint64_t g_dispatch_entry;
 static int g_pipe_to_sh;    /* parent writes signal here */
 static int g_pipe_from_sh;  /* parent reads ack here */
 
+/* ── Bash env visitor ─────────────────────────────────────────── */
+
+/*
+ * Build `export KEY="VALUE"\n` lines.  The persistent hush child
+ * was spawned at boot and doesn't see setenv changes in the parent.
+ * Prepending export lines to the dispatch script is the only way
+ * to propagate host env vars to shell code.
+ */
+struct bash_env_buf {
+	char *buf;
+	size_t pos;
+	size_t cap;
+};
+
+static void bash_env_visitor(const char *key, const char *val, void *ctx)
+{
+	struct bash_env_buf *eb = (struct bash_env_buf *)ctx;
+	size_t need = 10 + strlen(key) + strlen(val) + 4;
+	if (eb->pos + need >= eb->cap)
+		return;
+	eb->pos += snprintf(eb->buf + eb->pos, eb->cap - eb->pos,
+			    "export %s=\"%s\"\n", key, val);
+}
+
 /* ── Dispatch callback ─────────────────────────────────────────── */
 
 static int bash_dispatch(const uint8_t *fc, size_t fc_len)
 {
+	/* Refresh env vars — updates glibc environ and builds
+	 * export lines for the shell. */
+	char env_prefix[4096];
+	struct bash_env_buf eb = { env_prefix, 0, sizeof(env_prefix) };
+	hl_env_refresh(bash_env_visitor, &eb);
+
 	/* Extract the code string from the FunctionCall FlatBuffer */
 	size_t code_len;
 	const char *code = fc_arg0_string(fc, fc_len, &code_len);
@@ -65,6 +96,9 @@ static int bash_dispatch(const uint8_t *fc, size_t fc_len)
 		fflush(stderr);
 		return -1;
 	}
+	/* Prepend export lines if any */
+	if (eb.pos > 0)
+		fwrite(env_prefix, 1, eb.pos, f);
 	fwrite(code, 1, code_len, f);
 	fputc('\n', f);
 	fclose(f);
@@ -133,13 +167,8 @@ int main(int argc, char **argv, char **envp)
 	(void)argv;
 
 	/* Parse kernel addresses from env vars */
-	for (char **p = envp; p && *p; p++) {
-		if (!strncmp(*p, "HL_DISPATCH_CALLBACK_PTR=", 25))
-			g_callback_slot = (hl_dispatch_fn_t *)
-				hl_parse_hex(*p + 25);
-		else if (!strncmp(*p, "HL_DISPATCH_ENTRY=", 18))
-			g_dispatch_entry = hl_parse_hex(*p + 18);
-	}
+	hl_env_init(envp, &g_callback_slot, &g_dispatch_entry);
+	hl_env_clean_reserved();
 
 	if (!g_callback_slot || !g_dispatch_entry) {
 		fprintf(stderr,
