@@ -97,6 +97,11 @@ struct RunArgs {
     /// Without this flag, bind() is rejected (outbound-only).
     #[arg(long = "port", value_name = "PORT")]
     ports: Vec<u16>,
+
+    /// Set an environment variable in the guest (repeatable).
+    /// Format: KEY=VALUE (e.g. --env MY_VAR=hello --env DEBUG=1).
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    envs: Vec<String>,
 }
 
 /// Arguments for `snapshot save`.
@@ -175,6 +180,11 @@ struct SnapshotRunArgs {
     /// Ports the guest may bind to for inbound connections.
     #[arg(long = "port", value_name = "PORT")]
     ports: Vec<u16>,
+
+    /// Set an environment variable in the guest (repeatable).
+    /// Format: KEY=VALUE (e.g. --env MY_VAR=hello --env DEBUG=1).
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    envs: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -253,6 +263,12 @@ struct BenchParallelArgs {
 /// Handles Windows drive-letter paths (e.g. `C:\data:/mnt:ro`) by
 /// treating a single ASCII letter followed by `:\` as part of the
 /// host path rather than a separator.
+fn parse_envs(raw: &[String]) -> Vec<(&str, &str)> {
+    raw.iter()
+        .filter_map(|e| e.split_once('='))
+        .collect()
+}
+
 fn parse_mounts(raw: &[String]) -> Vec<Mount> {
     raw.iter()
         .filter_map(|m| {
@@ -350,8 +366,9 @@ fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
             .map_err(hyperlight_unikraft::hyperlight_host::HyperlightError::Error)?;
 
     let exec = resolve_exec(args.script, args.exec)?;
+    let envs = parse_envs(&args.envs);
 
-    let (usandbox, _config) = create_sandbox(
+    let (usandbox, config) = create_sandbox(
         &args.initrd,
         &args.entry,
         args.scratch_mb,
@@ -359,6 +376,10 @@ fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
         policy,
         listen,
     )?;
+
+    if !envs.is_empty() {
+        config.set_env_vars(&envs)?;
+    }
 
     let t = Instant::now();
     let mut sandbox = init(usandbox)?;
@@ -433,12 +454,18 @@ fn cmd_snapshot_run(
         "snapshot loaded",
     );
 
+    let envs = parse_envs(&args.envs);
+
     let t = Instant::now();
-    let (mut sandbox, _config) = restore(snap, mounts, policy, listen)?;
+    let (mut sandbox, config) = restore(snap, mounts, policy, listen)?;
     info!(
         elapsed_ms = t.elapsed().as_secs_f64() * 1000.0,
         "restored from snapshot",
     );
+
+    if !envs.is_empty() {
+        config.set_env_vars(&envs)?;
+    }
 
     let exec = resolve_exec(args.script, args.exec)?;
     if let Some(exec) = exec {
