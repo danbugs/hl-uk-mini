@@ -120,6 +120,245 @@ fn python_multiple_runs() {
     );
 }
 
+// ── Environment variable tests ────────────────────────────────────
+
+#[test]
+fn python_env_vars() {
+    let rootfs = require_rootfs!("python");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
+    cfg.set_env_vars(&[
+        ("MY_VAR", "hello_world"),
+        ("DEBUG", "1"),
+        ("GREETING", "hi there"),
+    ]).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, Exec::File(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/python/env_vars.py"),
+    )).unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("MY_VAR=hello_world"),
+        "expected MY_VAR=hello_world, got: {output:?}",
+    );
+    assert!(
+        output.contains("DEBUG=1"),
+        "expected DEBUG=1, got: {output:?}",
+    );
+    assert!(
+        output.contains("GREETING=hi there"),
+        "expected GREETING=hi there, got: {output:?}",
+    );
+}
+
+#[test]
+fn python_env_vars_inline() {
+    let rootfs = require_rootfs!("python");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
+    cfg.set_env_vars(&[("SECRET", "42")]).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, "import os; print(os.environ['SECRET'])").unwrap();
+    let output = cfg.drain_output();
+    assert!(
+        output.contains("42"),
+        "expected '42' from SECRET env var, got: {output:?}",
+    );
+}
+
+#[test]
+fn python_env_vars_snapshot_restore() {
+    let rootfs = require_rootfs!("python");
+    let snap_dir = snapshot_dir("py-env-snap");
+
+    // Save snapshot (no env vars set at save time)
+    let (usandbox, _cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    let snap = sandbox.snapshot().unwrap();
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    snap.save(&snap_dir, &tag).unwrap();
+
+    // Restore + set env vars AFTER restore
+    let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
+    let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
+    let (mut sandbox, cfg2) = restore(snap, Vec::new(), None, None).unwrap();
+    cfg2.set_env_vars(&[("RESTORED_VAR", "from_snapshot")]).unwrap();
+    run(&mut sandbox, r#"
+import os
+v = os.environ.get('RESTORED_VAR', 'NOT_FOUND')
+print(f'RESTORED_VAR={v}')
+"#).unwrap();
+    let output = cfg2.drain_output();
+    eprintln!("snapshot env output: {output:?}");
+    assert!(
+        output.contains("RESTORED_VAR=from_snapshot"),
+        "expected env var set after snapshot restore, got: {output:?}",
+    );
+
+    let _ = std::fs::remove_dir_all(&snap_dir);
+}
+
+/// Env vars are stateful across dispatches without restore.
+///
+/// Flow: create → run (no envs) → set envs → run (see envs) →
+///       DON'T restore, DON'T set new envs → run (still see envs).
+#[test]
+fn python_env_vars_stateful_across_dispatches() {
+    let rootfs = require_rootfs!("python");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+
+    // 1. Run with no env vars set — STATEFUL_VAR should not exist.
+    run(&mut sandbox, r#"
+import os
+v = os.environ.get('STATEFUL_VAR', 'NOT_FOUND')
+print(f'step1: STATEFUL_VAR={v}')
+"#).unwrap();
+    let out1 = cfg.drain_output();
+    assert!(
+        out1.contains("step1: STATEFUL_VAR=NOT_FOUND"),
+        "expected no STATEFUL_VAR before setting, got: {out1:?}",
+    );
+
+    // 2. Set env vars, then run — should see them.
+    cfg.set_env_vars(&[("STATEFUL_VAR", "persisted")]).unwrap();
+    run(&mut sandbox, r#"
+import os
+v = os.environ.get('STATEFUL_VAR', 'NOT_FOUND')
+print(f'step2: STATEFUL_VAR={v}')
+"#).unwrap();
+    let out2 = cfg.drain_output();
+    assert!(
+        out2.contains("step2: STATEFUL_VAR=persisted"),
+        "expected STATEFUL_VAR=persisted after setting, got: {out2:?}",
+    );
+
+    // 3. Run AGAIN without setting env vars or restoring — should
+    //    still see the env vars from the previous dispatch.
+    run(&mut sandbox, r#"
+import os
+v = os.environ.get('STATEFUL_VAR', 'NOT_FOUND')
+print(f'step3: STATEFUL_VAR={v}')
+"#).unwrap();
+    let out3 = cfg.drain_output();
+    assert!(
+        out3.contains("step3: STATEFUL_VAR=persisted"),
+        "expected env vars to persist across dispatches without restore, got: {out3:?}",
+    );
+}
+
+// ── Stdin tests ──────────────────────────────────────────────────
+//
+// Stdin is always interactive (reads from the host's real stdin).
+// These tests spawn `hluk` as a subprocess with piped stdin to
+// exercise the full end-to-end path.
+
+/// Helper: run hluk as a subprocess with piped stdin.
+fn hluk_with_stdin(rootfs: &std::path::Path, script: &std::path::Path, stdin_data: &[u8]) -> String {
+    use std::process::{Command, Stdio};
+    use std::io::Write;
+
+    let bin = env!("CARGO_BIN_EXE_hluk");
+    let mut child = Command::new(bin)
+        .args(["run", "--initrd", rootfs.to_str().unwrap()])
+        .arg(script)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn hluk");
+
+    // Write data then close stdin (sends EOF to the guest).
+    if let Some(ref mut stdin) = child.stdin {
+        stdin.write_all(stdin_data).ok();
+    }
+    child.stdin.take(); // close → EOF
+
+    let output = child.wait_with_output().expect("hluk didn't finish");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn python_stdin_piped() {
+    let rootfs = require_rootfs!("python");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/python/stdin_echo.py");
+    let output = hluk_with_stdin(&rootfs, &script, b"hello from host\nline two\n");
+    assert!(
+        output.contains("lines=2"),
+        "expected 2 lines, got: {output:?}",
+    );
+    assert!(
+        output.contains("echo: hello from host"),
+        "expected first line, got: {output:?}",
+    );
+    assert!(
+        output.contains("echo: line two"),
+        "expected second line, got: {output:?}",
+    );
+    assert!(
+        output.contains("stdin-done"),
+        "expected stdin-done marker, got: {output:?}",
+    );
+}
+
+#[test]
+fn python_stdin_inline_piped() {
+    let rootfs = require_rootfs!("python");
+    use std::process::{Command, Stdio};
+    use std::io::Write;
+
+    let bin = env!("CARGO_BIN_EXE_hluk");
+    let mut child = Command::new(bin)
+        .args([
+            "run", "--initrd", rootfs.to_str().unwrap(),
+            "--exec", "import sys; data = sys.stdin.read(); print(f'got: {data}')",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn hluk");
+
+    if let Some(ref mut stdin) = child.stdin {
+        stdin.write_all(b"secret data").ok();
+    }
+    child.stdin.take();
+
+    let output = child.wait_with_output().expect("hluk didn't finish");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("got: secret data"),
+        "expected stdin data, got: {stdout:?}",
+    );
+}
+
+#[test]
+fn python_stdin_empty_piped() {
+    let rootfs = require_rootfs!("python");
+    use std::process::{Command, Stdio};
+
+    let bin = env!("CARGO_BIN_EXE_hluk");
+    let mut child = Command::new(bin)
+        .args([
+            "run", "--initrd", rootfs.to_str().unwrap(),
+            "--exec", "import sys; data = sys.stdin.read(); print(f'len={len(data)}')",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn hluk");
+
+    // Immediately close stdin → EOF with no data.
+    child.stdin.take();
+
+    let output = child.wait_with_output().expect("hluk didn't finish");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("len=0"),
+        "expected empty stdin (len=0), got: {stdout:?}",
+    );
+}
+
 // ── Node.js tests ──────────────────────────────────────────────────
 
 #[test]
@@ -1523,4 +1762,204 @@ fn agent_custom_hello_flask() {
         output.contains("custom-rootfs-ok"),
         "expected custom rootfs test to pass, got: {output:?}",
     );
+}
+
+// ── Environment variable tests (multi-runtime) ───────────────────
+
+#[test]
+fn bash_env_vars() {
+    let rootfs = require_rootfs!("bash");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
+    cfg.set_env_vars(&[
+        ("MY_VAR", "hello_world"),
+        ("DEBUG", "1"),
+        ("GREETING", "hi there"),
+    ]).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, Exec::File(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/bash/env_vars.sh"),
+    )).unwrap();
+    let output = cfg.drain_output();
+    assert!(output.contains("MY_VAR=hello_world"), "expected MY_VAR=hello_world, got: {output:?}");
+    assert!(output.contains("DEBUG=1"), "expected DEBUG=1, got: {output:?}");
+    assert!(output.contains("GREETING=hi there"), "expected GREETING=hi there, got: {output:?}");
+}
+
+#[test]
+fn node_env_vars() {
+    let rootfs = require_rootfs!("node");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
+    cfg.set_env_vars(&[
+        ("MY_VAR", "hello_world"),
+        ("DEBUG", "1"),
+        ("GREETING", "hi there"),
+    ]).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, Exec::File(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/node/env_vars.js"),
+    )).unwrap();
+    let output = cfg.drain_output();
+    assert!(output.contains("MY_VAR=hello_world"), "expected MY_VAR=hello_world, got: {output:?}");
+    assert!(output.contains("DEBUG=1"), "expected DEBUG=1, got: {output:?}");
+    assert!(output.contains("GREETING=hi there"), "expected GREETING=hi there, got: {output:?}");
+}
+
+#[test]
+fn dotnet_jit_env_vars() {
+    let rootfs = require_rootfs!("dotnet-jit");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 768, Vec::new(), None, None).unwrap();
+    cfg.set_env_vars(&[
+        ("MY_VAR", "hello_world"),
+        ("DEBUG", "1"),
+        ("GREETING", "hi there"),
+    ]).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, Exec::File(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/dotnet-jit/EnvVars.cs"),
+    )).unwrap();
+    let output = cfg.drain_output();
+    assert!(output.contains("MY_VAR=hello_world"), "expected MY_VAR=hello_world, got: {output:?}");
+    assert!(output.contains("DEBUG=1"), "expected DEBUG=1, got: {output:?}");
+    assert!(output.contains("GREETING=hi there"), "expected GREETING=hi there, got: {output:?}");
+}
+
+#[test]
+fn powershell_env_vars() {
+    let rootfs = require_rootfs!("powershell");
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 1024, Vec::new(), None, None).unwrap();
+    cfg.set_env_vars(&[
+        ("MY_VAR", "hello_world"),
+        ("DEBUG", "1"),
+        ("GREETING", "hi there"),
+    ]).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, Exec::File(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/powershell/env_vars.ps1"),
+    )).unwrap();
+    let output = cfg.drain_output();
+    assert!(output.contains("MY_VAR=hello_world"), "expected MY_VAR=hello_world, got: {output:?}");
+    assert!(output.contains("DEBUG=1"), "expected DEBUG=1, got: {output:?}");
+    assert!(output.contains("GREETING=hi there"), "expected GREETING=hi there, got: {output:?}");
+}
+
+#[test]
+fn c_env_vars() {
+    let rootfs = require_rootfs!("c");
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/c/env_vars.c");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-c-env-{}", std::process::id()));
+    std::fs::create_dir_all(&build_dir).unwrap();
+    let out = build_dir.join("env_vars");
+    compile_example("gcc", &[
+        "-O2", "-Wall", "-static-pie", "-fPIE",
+        "-o", out.to_str().unwrap(), src.to_str().unwrap(),
+    ], &out);
+
+    let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts, None, None).unwrap();
+    cfg.set_env_vars(&[
+        ("MY_VAR", "hello_world"),
+        ("DEBUG", "1"),
+        ("GREETING", "hi there"),
+    ]).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, "/mnt/bin/env_vars").unwrap();
+    let output = cfg.drain_output();
+    assert!(output.contains("MY_VAR=hello_world"), "expected MY_VAR=hello_world, got: {output:?}");
+    assert!(output.contains("DEBUG=1"), "expected DEBUG=1, got: {output:?}");
+    assert!(output.contains("GREETING=hi there"), "expected GREETING=hi there, got: {output:?}");
+    let _ = std::fs::remove_dir_all(&build_dir);
+}
+
+#[test]
+fn rust_env_vars() {
+    let rootfs = require_rootfs!("rust");
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/rust/env_vars.rs");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-rust-env-{}", std::process::id()));
+    std::fs::create_dir_all(&build_dir).unwrap();
+    let out = build_dir.join("env_vars");
+    compile_example("rustc", &[
+        "-C", "opt-level=2",
+        "-C", "target-feature=+crt-static",
+        "-C", "relocation-model=pie",
+        "-o", out.to_str().unwrap(), src.to_str().unwrap(),
+    ], &out);
+
+    let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts, None, None).unwrap();
+    cfg.set_env_vars(&[
+        ("MY_VAR", "hello_world"),
+        ("DEBUG", "1"),
+        ("GREETING", "hi there"),
+    ]).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, "/mnt/bin/env_vars").unwrap();
+    let output = cfg.drain_output();
+    assert!(output.contains("MY_VAR=hello_world"), "expected MY_VAR=hello_world, got: {output:?}");
+    assert!(output.contains("DEBUG=1"), "expected DEBUG=1, got: {output:?}");
+    assert!(output.contains("GREETING=hi there"), "expected GREETING=hi there, got: {output:?}");
+    let _ = std::fs::remove_dir_all(&build_dir);
+}
+
+#[test]
+fn go_env_vars() {
+    let rootfs = require_rootfs!("go");
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/go/env_vars.go");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-go-env-{}", std::process::id()));
+    std::fs::create_dir_all(&build_dir).unwrap();
+    let out = build_dir.join("env_vars");
+    let status = std::process::Command::new("go")
+        .args(["build", "-buildmode=pie", "-ldflags=-s -w",
+               "-o", out.to_str().unwrap(), src.to_str().unwrap()])
+        .env("CGO_ENABLED", "0")
+        .status()
+        .expect("go build failed to start");
+    assert!(status.success(), "go build failed");
+
+    let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 128, mounts, None, None).unwrap();
+    cfg.set_env_vars(&[
+        ("MY_VAR", "hello_world"),
+        ("DEBUG", "1"),
+        ("GREETING", "hi there"),
+    ]).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, "/mnt/bin/env_vars").unwrap();
+    let output = cfg.drain_output();
+    assert!(output.contains("MY_VAR=hello_world"), "expected MY_VAR=hello_world, got: {output:?}");
+    assert!(output.contains("DEBUG=1"), "expected DEBUG=1, got: {output:?}");
+    assert!(output.contains("GREETING=hi there"), "expected GREETING=hi there, got: {output:?}");
+    let _ = std::fs::remove_dir_all(&build_dir);
+}
+
+#[test]
+fn dotnet_aot_env_vars() {
+    let rootfs = require_rootfs!("dotnet-aot");
+    let proj = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/dotnet-aot-envvars");
+    let build_dir = std::env::temp_dir().join(format!("hluk-test-dotnet-aot-env-{}", std::process::id()));
+
+    if !dotnet_publish(&proj, &build_dir) {
+        eprintln!("SKIP: dotnet publish failed");
+        return;
+    }
+
+    let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, mounts, None, None).unwrap();
+    cfg.set_env_vars(&[
+        ("MY_VAR", "hello_world"),
+        ("DEBUG", "1"),
+        ("GREETING", "hi there"),
+    ]).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    // .NET AOT reads env vars via Environment.GetEnvironmentVariable
+    // from the glibc environ — updated by hl_env_refresh's setenv.
+    run(&mut sandbox, "/mnt/bin/EnvVars").unwrap();
+    let output = cfg.drain_output();
+    assert!(output.contains("MY_VAR=hello_world"), "expected MY_VAR=hello_world, got: {output:?}");
+    assert!(output.contains("DEBUG=1"), "expected DEBUG=1, got: {output:?}");
+    assert!(output.contains("GREETING=hi there"), "expected GREETING=hi there, got: {output:?}");
+    let _ = std::fs::remove_dir_all(&build_dir);
 }
