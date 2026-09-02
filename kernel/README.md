@@ -13,24 +13,27 @@ See `../defconfig-elfloader` for the full kconfig used to build this kernel.
 
 ## Rebuilding from source
 
-If you need to rebuild the kernel (e.g. to pick up Unikraft changes):
+The kernel is built from three git submodules pinned under `kernel/`:
+
+| Submodule | Source | Branch |
+|-----------|--------|--------|
+| `unikraft` | [danbugs/unikraft](https://github.com/danbugs/unikraft) | `plat-hyperlight-cleanup` |
+| `app-elfloader` | [unikraft/app-elfloader](https://github.com/unikraft/app-elfloader) | `staging` |
+| `libs/libelf` | [unikraft/lib-libelf](https://github.com/unikraft/lib-libelf) | `staging` |
 
 ```bash
-cd ~/repos/unikraft-project/app-elfloader
+# Initialise submodules (first time only)
+git submodule update --init --recursive
 
-# Copy defconfig into the app-elfloader root (NOT build/.config — the
-# Makefile always reads .config from here regardless of O= flags).
-cp ~/repos/hyperlight-unikraft-mini/defconfig-elfloader .config
+# Build the kernel
+just build-kernel
 
-# Clean stale build artifacts, expand the defconfig, then build.
-make properclean
-make olddefconfig
-make -j$(nproc)
-
-# Copy the binary back
-cp workdir/build/elfloader_hyperlight-x86_64 \
-   ~/repos/hyperlight-unikraft-mini/kernel/
+# Verify a committed binary matches source (CI uses this)
+just verify-kernel
 ```
+
+The build is reproducible — `CONFIG_LIBUKLIBID_INFO_COMPILEDATE=n` in the
+defconfig ensures the same source always produces the same binary.
 
 <!-- TODO: upstream kernel changes to kraft so this can be built with
      `kraft build --plat hyperlight --arch x86_64` without manual patching. -->
