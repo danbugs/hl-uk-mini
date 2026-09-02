@@ -53,6 +53,113 @@ build *flags:
 build *flags:
     if ("{{flags}}" -match '--debug') { cargo build --manifest-path "{{root_dir}}/Cargo.toml" } else { cargo build --release --manifest-path "{{root_dir}}/Cargo.toml" }
 
+# ── Kernel ───────────────────────────────────────────────────────
+
+kernel_dir    := root_dir / "kernel"
+kernel_bin    := kernel_dir / "elfloader_hyperlight-x86_64"
+kernel_build  := kernel_dir / ".build"
+
+# Build the Unikraft elfloader kernel from submodule sources.
+# Requires: gcc, make, and the kernel submodules (git submodule update --init).
+[unix]
+build-kernel:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    app="{{kernel_dir}}/app-elfloader"
+    uk="{{kernel_dir}}/unikraft"
+    libs="{{kernel_dir}}/libs"
+    build="{{kernel_build}}"
+
+    if [ ! -f "$uk/Makefile" ]; then
+        echo "error: kernel submodules not initialised" >&2
+        echo "run: git submodule update --init --recursive" >&2
+        exit 1
+    fi
+
+    mkdir -p "$build"
+
+    # The Unikraft build system constructs internal paths relative to
+    # app-elfloader's workdir/ layout.  Create symlinks so the default
+    # Makefile variables resolve correctly, then remove them after the
+    # build so the submodule stays pristine.
+    mkdir -p "$app/workdir/libs"
+    ln -sfn "$uk" "$app/workdir/unikraft"
+    ln -sfn "{{kernel_dir}}/libs/libelf" "$app/workdir/libs/libelf"
+    ln -sfn "$build" "$app/workdir/build"
+
+    cp "{{root_dir}}/defconfig-elfloader" "$app/.config"
+
+    # cd into app-elfloader so $(PWD) in its Makefile resolves correctly
+    pushd "$app" > /dev/null
+
+    # Expand defconfig into full .config (answer new prompts with defaults)
+    yes "" 2>/dev/null | make WITH_LWIP=n olddefconfig || true
+    make WITH_LWIP=n -j$(nproc)
+
+    popd > /dev/null
+
+    cp "$build/elfloader_hyperlight-x86_64" "{{kernel_bin}}"
+
+    # Clean up: remove symlinks and generated files from the submodule
+    rm -f "$app/.config" "$app/.config.old"
+    rm -f "$app/workdir/unikraft" "$app/workdir/libs/libelf" "$app/workdir/build"
+    rmdir "$app/workdir/libs" "$app/workdir" 2>/dev/null || true
+
+    echo "==> Kernel built: {{kernel_bin}}"
+    echo "    sha256: $(sha256sum "{{kernel_bin}}" | cut -d' ' -f1)"
+
+# Verify the committed kernel binary matches a fresh build.
+# Returns exit 0 if they match, exit 1 if they differ.
+[unix]
+verify-kernel:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    committed="$(sha256sum "{{kernel_bin}}" | cut -d' ' -f1)"
+
+    app="{{kernel_dir}}/app-elfloader"
+    uk="{{kernel_dir}}/unikraft"
+    libs="{{kernel_dir}}/libs"
+    build="{{kernel_build}}"
+
+    if [ ! -f "$uk/Makefile" ]; then
+        echo "error: kernel submodules not initialised" >&2
+        echo "run: git submodule update --init --recursive" >&2
+        exit 1
+    fi
+
+    mkdir -p "$build"
+    mkdir -p "$app/workdir/libs"
+    ln -sfn "$uk" "$app/workdir/unikraft"
+    ln -sfn "{{kernel_dir}}/libs/libelf" "$app/workdir/libs/libelf"
+    ln -sfn "$build" "$app/workdir/build"
+
+    cp "{{root_dir}}/defconfig-elfloader" "$app/.config"
+
+    pushd "$app" > /dev/null
+    yes "" 2>/dev/null | make WITH_LWIP=n olddefconfig > /dev/null 2>&1 || true
+    make WITH_LWIP=n -j$(nproc) > /dev/null 2>&1
+    popd > /dev/null
+
+    rm -f "$app/.config" "$app/.config.old"
+    rm -f "$app/workdir/unikraft" "$app/workdir/libs/libelf" "$app/workdir/build"
+    rmdir "$app/workdir/libs" "$app/workdir" 2>/dev/null || true
+
+    fresh="$(sha256sum "$build/elfloader_hyperlight-x86_64" | cut -d' ' -f1)"
+    if [ "$committed" = "$fresh" ]; then
+        echo "✓ Kernel binary matches source (sha256: $committed)"
+    else
+        echo "✗ Kernel binary does NOT match source" >&2
+        echo "  committed: $committed" >&2
+        echo "  fresh:     $fresh" >&2
+        echo "  Run 'just build-kernel' to rebuild." >&2
+        exit 1
+    fi
+
+# Clean kernel build artifacts (does not touch the committed binary).
+[unix]
+clean-kernel:
+    rm -rf "{{kernel_build}}"
+
 # ── Rootfs ───────────────────────────────────────────────────────
 
 # Build a rootfs CPIO from a driver Dockerfile.
