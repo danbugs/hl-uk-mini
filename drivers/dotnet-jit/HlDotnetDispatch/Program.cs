@@ -26,6 +26,14 @@ using var pipeOut = new FileStream(
 // so dispatches after restore skip the warmup cost entirely.
 RoslynCompiler.WarmUp();
 
+// Redirect Console.In to a raw FileStream on fd 0.
+// The default Console.ReadLine() initialization triggers .NET's signal
+// handler setup (sigaction with SA_ONSTACK), which hits a Unikraft kernel
+// assertion for threads without an alternate signal stack.  Pre-setting
+// Console.In bypasses that initialization path entirely.
+Console.SetIn(new StreamReader(
+    new FileStream(new SafeFileHandle((nint)0, ownsHandle: false), FileAccess.Read)));
+
 pipeOut.WriteByte(0);
 pipeOut.Flush();
 
