@@ -165,29 +165,44 @@ static int write_bootstrap(int fd_in, int fd_out)
 		"// Signal ready to parent\n"
 		"fs.writeSync(fd_out, Buffer.from([0]));\n"
 		"\n"
-		"// Dispatch loop — runs forever, one eval per iteration\n"
+		"// Async-aware dispatch loop.\n"
+		"// readSync blocks (yields to cooperative scheduler), eval runs\n"
+		"// the code, then we await the event loop draining via 'beforeExit'\n"
+		"// before acking — so readline, setTimeout, http.get, and any\n"
+		"// other async pattern works out of the box.\n"
 		"const hdr = Buffer.alloc(8);\n"
-		"while (true) {\n"
-		"  let n = fs.readSync(fd_in, hdr, 0, 8);\n"
-		"  if (n < 8) break;\n"
-		"  let len = Number(hdr.readBigUInt64LE(0));\n"
-		"  let buf = Buffer.alloc(len);\n"
-		"  let off = 0;\n"
-		"  while (off < len) {\n"
-		"    n = fs.readSync(fd_in, buf, off, len - off);\n"
-		"    if (n <= 0) process.exit(1);\n"
-		"    off += n;\n"
+		"(async () => {\n"
+		"  while (true) {\n"
+		"    let n = fs.readSync(fd_in, hdr, 0, 8);\n"
+		"    if (n < 8) break;\n"
+		"    let len = Number(hdr.readBigUInt64LE(0));\n"
+		"    let buf = Buffer.alloc(len);\n"
+		"    let off = 0;\n"
+		"    while (off < len) {\n"
+		"      n = fs.readSync(fd_in, buf, off, len - off);\n"
+		"      if (n <= 0) process.exit(1);\n"
+		"      off += n;\n"
+		"    }\n"
+		"    let code = buf.toString('utf8');\n"
+		"    try {\n"
+		"      let result = (0, eval)(code);\n"
+		"      // If eval returned a Promise, await it first\n"
+		"      if (result && typeof result.then === 'function') {\n"
+		"        await result;\n"
+		"      }\n"
+		"      // Wait for the event loop to drain — 'beforeExit' fires\n"
+		"      // when Node has no pending I/O, timers, or callbacks.\n"
+		"      // For sync code this resolves immediately (one tick).\n"
+		"      // For async code (setTimeout, http.get, readline, etc.)\n"
+		"      // it waits until all async work completes.\n"
+		"      await new Promise(r => process.once('beforeExit', r));\n"
+		"      fs.writeSync(fd_out, Buffer.from([0]));  // success ack\n"
+		"    } catch (e) {\n"
+		"      console.error(e.stack || e);\n"
+		"      fs.writeSync(fd_out, Buffer.from([1]));  // error ack\n"
+		"    }\n"
 		"  }\n"
-		"  let code = buf.toString('utf8');\n"
-		"  try {\n"
-		"    let result = (0, eval)(code);\n"
-		"    if (result !== undefined) console.log(result);\n"
-		"    fs.writeSync(fd_out, Buffer.from([0]));  // success ack\n"
-		"  } catch (e) {\n"
-		"    console.error(e.stack || e);\n"
-		"    fs.writeSync(fd_out, Buffer.from([1]));  // error ack\n"
-		"  }\n"
-		"}\n",
+		"})();\n",
 		fd_in, fd_out);
 
 	fclose(f);
@@ -253,6 +268,9 @@ int main(int argc, char **argv, char **envp)
 		fprintf(stderr, "hl_nodedriver: child failed to start\n");
 		return 1;
 	}
+
+	/* Bootstrap is loaded — remove it from the guest filesystem. */
+	unlink("/tmp/hl_bootstrap.js");
 
 	/* Register dispatch callback */
 	*g_callback_slot = node_dispatch;
