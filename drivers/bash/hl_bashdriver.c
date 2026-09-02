@@ -118,6 +118,10 @@ static int bash_dispatch(const uint8_t *fc, size_t fc_len)
 		fflush(stderr);
 		return -1;
 	}
+
+	/* Dispatch file consumed — remove from guest filesystem. */
+	unlink("/tmp/hl_dispatch.sh");
+
 	return ack != '0' ? -1 : 0;
 }
 
@@ -215,6 +219,9 @@ int main(int argc, char **argv, char **envp)
 		fprintf(stderr, "hl_bashdriver: shell failed to start\n");
 		return 1;
 	}
+
+	/* Bootstrap is loaded — remove it from the guest filesystem. */
+	unlink("/tmp/hl_bootstrap.sh");
 
 	/* Register dispatch callback */
 	*g_callback_slot = bash_dispatch;
