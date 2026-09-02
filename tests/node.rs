@@ -5,16 +5,15 @@ use std::sync::Arc;
 
 use common::{hluk_with_stdin_scratch, require_rootfs, snapshot_dir};
 use hyperlight_unikraft::{
-    Exec, Mount, NetworkPolicy, OciTag, Snapshot, SNAPSHOT_TAG,
-    create_sandbox, init, restore, run,
+    Exec, Mount, NetworkPolicy, OciTag, SNAPSHOT_TAG, Snapshot, create_sandbox, init, restore, run,
 };
 
 #[test]
 fn node_exec_file() {
     let rootfs = require_rootfs("node");
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/node/hello.js");
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/node/hello.js");
+    let (usandbox, cfg) =
+        create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
@@ -27,7 +26,8 @@ fn node_exec_file() {
 #[test]
 fn node_inline_code() {
     let rootfs = require_rootfs("node");
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
+    let (usandbox, cfg) =
+        create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
     run(&mut sandbox, "console.log('hluk-node-ok')").unwrap();
     let output = cfg.drain_output();
@@ -41,7 +41,8 @@ fn node_inline_code() {
 fn node_snapshot_round_trip() {
     let rootfs = require_rootfs("node");
     let snap_dir = snapshot_dir("node-snap");
-    let (usandbox, _cfg) = create_sandbox(&Some(rootfs.clone()), &None, 512, Vec::new(), None, None).unwrap();
+    let (usandbox, _cfg) =
+        create_sandbox(&Some(rootfs.clone()), &None, 512, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
@@ -62,20 +63,28 @@ fn node_snapshot_round_trip() {
 #[test]
 fn node_stdin_piped() {
     let rootfs = require_rootfs("node");
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/node/stdin_echo.js");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/node/stdin_echo.js");
     let output = hluk_with_stdin_scratch(&rootfs, &script, b"hello from host\nline two\n", 512);
-    assert!(output.contains("lines=2"), "expected 2 lines, got: {output:?}");
-    assert!(output.contains("echo: hello from host"), "expected first line, got: {output:?}");
-    assert!(output.contains("stdin-done"), "expected stdin-done marker, got: {output:?}");
+    assert!(
+        output.contains("lines=2"),
+        "expected 2 lines, got: {output:?}"
+    );
+    assert!(
+        output.contains("echo: hello from host"),
+        "expected first line, got: {output:?}"
+    );
+    assert!(
+        output.contains("stdin-done"),
+        "expected stdin-done marker, got: {output:?}"
+    );
 }
 
 #[test]
 fn node_async_timers() {
     let rootfs = require_rootfs("node");
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/node/async_timers.js");
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/node/async_timers.js");
+    let (usandbox, cfg) =
+        create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
     let code = std::fs::read_to_string(&script).unwrap();
     run(&mut sandbox, &*code).unwrap();
@@ -100,8 +109,7 @@ fn node_fs_ops() {
     let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 512, mounts, None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
 
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/node/fs_ops.js");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/node/fs_ops.js");
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -116,12 +124,17 @@ fn node_fs_ops() {
 fn node_http_get() {
     let rootfs = require_rootfs("node");
     let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs), &None, 512, Vec::new(), Some(NetworkPolicy::AllowAll), None,
-    ).unwrap();
+        &Some(rootfs),
+        &None,
+        512,
+        Vec::new(),
+        Some(NetworkPolicy::AllowAll),
+        None,
+    )
+    .unwrap();
     let mut sandbox = init(usandbox).unwrap();
 
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/node/http_get.js");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/node/http_get.js");
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -133,18 +146,31 @@ fn node_http_get() {
 #[test]
 fn node_env_vars() {
     let rootfs = require_rootfs("node");
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
+    let (usandbox, cfg) =
+        create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
     cfg.set_env_vars(&[
         ("MY_VAR", "hello_world"),
         ("DEBUG", "1"),
         ("GREETING", "hi there"),
-    ]).unwrap();
+    ])
+    .unwrap();
     let mut sandbox = init(usandbox).unwrap();
-    run(&mut sandbox, Exec::File(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/node/env_vars.js"),
-    )).unwrap();
+    run(
+        &mut sandbox,
+        Exec::File(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/node/env_vars.js")),
+    )
+    .unwrap();
     let output = cfg.drain_output();
-    assert!(output.contains("MY_VAR=hello_world"), "expected MY_VAR=hello_world, got: {output:?}");
-    assert!(output.contains("DEBUG=1"), "expected DEBUG=1, got: {output:?}");
-    assert!(output.contains("GREETING=hi there"), "expected GREETING=hi there, got: {output:?}");
+    assert!(
+        output.contains("MY_VAR=hello_world"),
+        "expected MY_VAR=hello_world, got: {output:?}"
+    );
+    assert!(
+        output.contains("DEBUG=1"),
+        "expected DEBUG=1, got: {output:?}"
+    );
+    assert!(
+        output.contains("GREETING=hi there"),
+        "expected GREETING=hi there, got: {output:?}"
+    );
 }

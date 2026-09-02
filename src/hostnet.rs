@@ -148,11 +148,7 @@ fn reg_bind(
     let lp = listen_ports.clone();
     t.register_host_function(
         "net_bind",
-        move |fd: i32,
-              family: i32,
-              addr: String,
-              port: i32|
-              -> hyperlight_host::Result<i32> {
+        move |fd: i32, family: i32, addr: String, port: i32| -> hyperlight_host::Result<i32> {
             let sa = match parse_addr(family, &addr, port) {
                 Some(a) => a,
                 None => return Ok(-libc::EINVAL),
@@ -250,11 +246,7 @@ fn reg_connect(
     let pol = policy.clone();
     t.register_host_function(
         "net_connect",
-        move |fd: i32,
-              family: i32,
-              addr: String,
-              port: i32|
-              -> hyperlight_host::Result<i32> {
+        move |fd: i32, family: i32, addr: String, port: i32| -> hyperlight_host::Result<i32> {
             let sa = match parse_addr(family, &addr, port) {
                 Some(a) => a,
                 None => return Ok(-libc::EINVAL),
@@ -596,9 +588,8 @@ fn reg_poll(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
                     .collect();
                 drop(tbl); // release lock during blocking poll
 
-                let ret = unsafe {
-                    libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout_ms)
-                };
+                let ret =
+                    unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout_ms) };
 
                 let mut buf = Vec::with_capacity(4 + nfds * 2);
                 if ret < 0 {
