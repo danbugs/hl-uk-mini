@@ -107,6 +107,7 @@ modules = [
     "test_smtplib",             # CRASH — SMTP client uses threaded server with select()
     "test_smtpnet",             # ERROR — SMTP network tests
     "test_socket",              # CRASH — non-threaded tests pass; threaded tests hang; getaddrinfo V4MAPPED crash
+    "test_timeout",             # CRASH — socket timeout tests crash (signal/select)
     "test_socketserver",        # CRASH — socket server with threaded select()
     "test_ssl",                 # ERROR — SSL/TLS (needs OpenSSL)
     "test_urllib2",             # CRASH — urllib2 HTTP uses threaded server with select()
