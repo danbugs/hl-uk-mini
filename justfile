@@ -36,6 +36,26 @@ scratch_agent        := "1536"
 scratch_agent_slim   := "256"
 scratch_agent_custom := "256"
 
+# Internal: resolve per-runtime scratch MiB (single source of truth).
+# Used by run, snapshot-save, bench, and conformance recipes.
+[private, unix]
+_scratch-mb runtime:
+    @case "{{runtime}}" in \
+        c)            echo "{{scratch_c}}" ;; \
+        rust)         echo "{{scratch_rust}}" ;; \
+        go)           echo "{{scratch_go}}" ;; \
+        bash)         echo "{{scratch_bash}}" ;; \
+        python)       echo "{{scratch_python}}" ;; \
+        dotnet-aot)   echo "{{scratch_dotnet_aot}}" ;; \
+        node)         echo "{{scratch_node}}" ;; \
+        dotnet-jit)   echo "{{scratch_dotnet_jit}}" ;; \
+        powershell)   echo "{{scratch_powershell}}" ;; \
+        agent)        echo "{{scratch_agent}}" ;; \
+        agent-slim)   echo "{{scratch_agent_slim}}" ;; \
+        agent-custom) echo "{{scratch_agent_custom}}" ;; \
+        *)            echo "256" ;; \
+    esac
+
 # ── Build ────────────────────────────────────────────────────────
 
 # Build the hluk CLI binary (release by default, pass `--debug` for debug)
@@ -276,22 +296,7 @@ run runtime script *args:
             just build-rootfs "{{runtime}}"
         fi
     fi
-    # Look up per-runtime scratch size
-    case "{{runtime}}" in
-        c)          scratch={{scratch_c}} ;;
-        rust)       scratch={{scratch_rust}} ;;
-        go)         scratch={{scratch_go}} ;;
-        bash)       scratch={{scratch_bash}} ;;
-        python)     scratch={{scratch_python}} ;;
-        dotnet-aot) scratch={{scratch_dotnet_aot}} ;;
-        node)       scratch={{scratch_node}} ;;
-        dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
-        powershell)  scratch={{scratch_powershell}} ;;
-        agent)       scratch={{scratch_agent}} ;;
-        agent-slim)   scratch={{scratch_agent_slim}} ;;
-        agent-custom) scratch={{scratch_agent_custom}} ;;
-        *)            scratch=256 ;;
-    esac
+    scratch=$(just _scratch-mb "{{runtime}}")
     just build
     "{{root_dir}}/target/release/hluk" run \
         --initrd "$rootfs" \
@@ -321,22 +326,7 @@ snapshot-save runtime *args:
             just build-rootfs "{{runtime}}"
         fi
     fi
-    # Look up per-runtime scratch size
-    case "{{runtime}}" in
-        c)          scratch={{scratch_c}} ;;
-        rust)       scratch={{scratch_rust}} ;;
-        go)         scratch={{scratch_go}} ;;
-        bash)       scratch={{scratch_bash}} ;;
-        python)     scratch={{scratch_python}} ;;
-        dotnet-aot) scratch={{scratch_dotnet_aot}} ;;
-        node)       scratch={{scratch_node}} ;;
-        dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
-        powershell)  scratch={{scratch_powershell}} ;;
-        agent)       scratch={{scratch_agent}} ;;
-        agent-slim)   scratch={{scratch_agent_slim}} ;;
-        agent-custom) scratch={{scratch_agent_custom}} ;;
-        *)            scratch=256 ;;
-    esac
+    scratch=$(just _scratch-mb "{{runtime}}")
     just build
     mkdir -p "{{snapshot_dir}}"
     "{{root_dir}}/target/release/hluk" snapshot save \
@@ -385,21 +375,7 @@ bench runtime *mode:
     snap_dir="{{snapshot_dir}}/{{runtime}}"
     bench_dir="{{benchmarks_dir}}/{{runtime}}"
 
-    case "{{runtime}}" in
-        c)          scratch={{scratch_c}} ;;
-        rust)       scratch={{scratch_rust}} ;;
-        go)         scratch={{scratch_go}} ;;
-        bash)       scratch={{scratch_bash}} ;;
-        python)     scratch={{scratch_python}} ;;
-        dotnet-aot) scratch={{scratch_dotnet_aot}} ;;
-        node)       scratch={{scratch_node}} ;;
-        dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
-        powershell)  scratch={{scratch_powershell}} ;;
-        agent)       scratch={{scratch_agent}} ;;
-        agent-slim)   scratch={{scratch_agent_slim}} ;;
-        agent-custom) scratch={{scratch_agent_custom}} ;;
-        *)            echo "error: unknown runtime '{{runtime}}'" >&2; exit 1 ;;
-    esac
+    scratch=$(just _scratch-mb "{{runtime}}")
 
     if [ ! -f "$rootfs" ]; then
         echo "==> rootfs not found, building first..."
@@ -652,21 +628,7 @@ conformance runtime *modules:
         just build-conformance "{{runtime}}"
     fi
 
-    case "{{runtime}}" in
-        c)          scratch={{scratch_c}} ;;
-        rust)       scratch={{scratch_rust}} ;;
-        go)         scratch={{scratch_go}} ;;
-        bash)       scratch={{scratch_bash}} ;;
-        python)     scratch={{scratch_python}} ;;
-        dotnet-aot) scratch={{scratch_dotnet_aot}} ;;
-        node)       scratch={{scratch_node}} ;;
-        dotnet-jit) scratch={{scratch_dotnet_jit}} ;;
-        powershell)  scratch={{scratch_powershell}} ;;
-        agent)       scratch={{scratch_agent}} ;;
-        agent-slim)   scratch={{scratch_agent_slim}} ;;
-        agent-custom) scratch={{scratch_agent_custom}} ;;
-        *)            scratch=256 ;;
-    esac
+    scratch=$(just _scratch-mb "{{runtime}}")
 
     just build
 
