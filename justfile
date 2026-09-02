@@ -415,6 +415,7 @@ bench runtime *mode:
     # Ensure snapshot exists
     if [ ! -d "$snap_dir" ]; then
         echo "==> Snapshot not found, saving first..."
+        mkdir -p "$(dirname "$snap_dir")"
         "$hluk" snapshot save \
             --initrd "$rootfs" \
             --scratch-mb "$scratch" \
