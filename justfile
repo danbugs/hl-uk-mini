@@ -746,6 +746,12 @@ conformance runtime *modules:
     echo "SUMMARY total=$total pass=$pass fail=$fail error=$error skip=$skip crash=$crash"
     echo "════════════════════════════════════════════"
 
+    if [ "$fail" -gt 0 ] || [ "$error" -gt 0 ] || [ "$crash" -gt 0 ]; then
+        echo ""
+        echo "✗ Conformance suite failed (fail=$fail error=$error crash=$crash)" >&2
+        exit 1
+    fi
+
 # ── Clean ────────────────────────────────────────────────────────
 
 # Remove build artifacts
