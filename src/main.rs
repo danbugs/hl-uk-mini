@@ -258,11 +258,10 @@ struct BenchParallelArgs {
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-/// Parse `--mount HOST:GUEST[:ro]` strings into [`Mount`] values.
+/// Parse `--env KEY=VALUE` strings into `(key, value)` pairs.
 ///
-/// Handles Windows drive-letter paths (e.g. `C:\data:/mnt:ro`) by
-/// treating a single ASCII letter followed by `:\` as part of the
-/// host path rather than a separator.
+/// Entries without `=` are silently skipped. The first `=` is the
+/// split point, so values may contain `=`.
 fn parse_envs(raw: &[String]) -> Vec<(&str, &str)> {
     raw.iter()
         .filter_map(|e| e.split_once('='))
@@ -814,6 +813,40 @@ fn main() -> hyperlight_unikraft::hyperlight_host::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_envs_basic() {
+        let input = vec!["KEY=value".into(), "DEBUG=1".into()];
+        let envs = parse_envs(&input);
+        assert_eq!(envs, vec![("KEY", "value"), ("DEBUG", "1")]);
+    }
+
+    #[test]
+    fn parse_envs_value_with_equals() {
+        let input = vec!["CONN=host=db;port=5432".into()];
+        let envs = parse_envs(&input);
+        assert_eq!(envs, vec![("CONN", "host=db;port=5432")]);
+    }
+
+    #[test]
+    fn parse_envs_empty_value() {
+        let input = vec!["EMPTY=".into()];
+        let envs = parse_envs(&input);
+        assert_eq!(envs, vec![("EMPTY", "")]);
+    }
+
+    #[test]
+    fn parse_envs_skips_invalid() {
+        let input = vec!["GOOD=1".into(), "no_equals".into(), "ALSO=ok".into()];
+        let envs = parse_envs(&input);
+        assert_eq!(envs, vec![("GOOD", "1"), ("ALSO", "ok")]);
+    }
+
+    #[test]
+    fn parse_envs_empty_input() {
+        let envs = parse_envs(&[]);
+        assert!(envs.is_empty());
+    }
 
     #[test]
     fn parse_unix_rw_mount() {
