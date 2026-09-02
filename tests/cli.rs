@@ -6,7 +6,8 @@ use hyperlight_unikraft::{Exec, create_sandbox, init, run};
 #[test]
 fn exec_file_not_found() {
     let rootfs = require_rootfs("python");
-    let (usandbox, _cfg) = create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
+    let (usandbox, _cfg) =
+        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
     let result = run(&mut sandbox, Exec::File("/nonexistent/script.py".into()));
     assert!(result.is_err());

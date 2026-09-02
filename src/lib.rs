@@ -29,13 +29,15 @@ use std::sync::{Arc, Mutex};
 pub use hyperlight_host;
 
 use hyperlight_host::{
-    GuestBinary, MultiUseSandbox, UninitializedSandbox,
-    func::Registerable,
+    GuestBinary, MultiUseSandbox, UninitializedSandbox, func::Registerable,
     sandbox::SandboxConfiguration,
 };
 
 // Re-export snapshot types so dependents don't need hyperlight-host directly.
-pub use hyperlight_host::{HostFunctions, sandbox::snapshot::{OciTag, Snapshot}};
+pub use hyperlight_host::{
+    HostFunctions,
+    sandbox::snapshot::{OciTag, Snapshot},
+};
 
 use tracing::{debug, info};
 
@@ -104,7 +106,11 @@ impl Mount {
     /// Parameter order matches Docker convention: host (source) first,
     /// guest (target) second.
     pub fn rw(host_path: impl Into<PathBuf>, guest_path: impl Into<String>) -> Self {
-        Self { guest_path: guest_path.into(), host_path: host_path.into(), readonly: false }
+        Self {
+            guest_path: guest_path.into(),
+            host_path: host_path.into(),
+            readonly: false,
+        }
     }
 
     /// Create a read-only mount.
@@ -112,7 +118,11 @@ impl Mount {
     /// Parameter order matches Docker convention: host (source) first,
     /// guest (target) second.
     pub fn ro(host_path: impl Into<PathBuf>, guest_path: impl Into<String>) -> Self {
-        Self { guest_path: guest_path.into(), host_path: host_path.into(), readonly: true }
+        Self {
+            guest_path: guest_path.into(),
+            host_path: host_path.into(),
+            readonly: true,
+        }
     }
 }
 
@@ -221,10 +231,10 @@ impl GuestConfig {
         )?;
 
         let cmdline = self.cmdline.clone();
-        target.register_host_function(
-            "GetCmdLine",
-            move || -> hyperlight_host::Result<String> { Ok(cmdline.clone()) },
-        )?;
+        target
+            .register_host_function("GetCmdLine", move || -> hyperlight_host::Result<String> {
+                Ok(cmdline.clone())
+            })?;
 
         let budget = self.paging_budget();
         target.register_host_function(
@@ -233,39 +243,34 @@ impl GuestConfig {
         )?;
 
         let base = self.initrd_base;
-        target.register_host_function(
-            "GetInitrdBase",
-            move || -> hyperlight_host::Result<u64> { Ok(base) },
-        )?;
+        target
+            .register_host_function("GetInitrdBase", move || -> hyperlight_host::Result<u64> {
+                Ok(base)
+            })?;
 
         let size = self.initrd_size;
-        target.register_host_function(
-            "GetInitrdSize",
-            move || -> hyperlight_host::Result<u64> { Ok(size) },
-        )?;
+        target
+            .register_host_function("GetInitrdSize", move || -> hyperlight_host::Result<u64> {
+                Ok(size)
+            })?;
 
         let est = self.exn_stack_top();
-        target.register_host_function(
-            "GetExnStackTop",
-            move || -> hyperlight_host::Result<u64> { Ok(est) },
-        )?;
+        target
+            .register_host_function("GetExnStackTop", move || -> hyperlight_host::Result<u64> {
+                Ok(est)
+            })?;
 
-        target.register_host_function(
-            "GetWallClockNs",
-            || -> hyperlight_host::Result<u64> {
-                Ok(std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos() as u64)
-                    .unwrap_or(0))
-            },
-        )?;
+        target.register_host_function("GetWallClockNs", || -> hyperlight_host::Result<u64> {
+            Ok(std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0))
+        })?;
 
-        target.register_host_function(
-            "GetHostFsChunkSize",
-            || -> hyperlight_host::Result<u64> {
+        target
+            .register_host_function("GetHostFsChunkSize", || -> hyperlight_host::Result<u64> {
                 Ok(hostfs::CHUNK as u64)
-            },
-        )?;
+            })?;
 
         // ── Environment variables ─────────────────────────────────
         let env_str = self.env_str.clone();
@@ -277,8 +282,12 @@ impl GuestConfig {
                 // addresses that must not leak to guest user code.
                 let mut filtered = String::new();
                 for entry in raw.split('\0') {
-                    if entry.is_empty() { continue; }
-                    if entry.starts_with("HL_") { continue; }
+                    if entry.is_empty() {
+                        continue;
+                    }
+                    if entry.starts_with("HL_") {
+                        continue;
+                    }
                     filtered.push_str(entry);
                     filtered.push('\0');
                 }
@@ -308,11 +317,7 @@ impl GuestConfig {
             hostfs::register(target, &hfs_mounts)?;
         }
         if self.network.is_some() {
-            hostnet::register(
-                target,
-                self.network.clone(),
-                self.listen_ports.clone(),
-            )?;
+            hostnet::register(target, self.network.clone(), self.listen_ports.clone())?;
         }
 
         Ok(())
@@ -347,16 +352,12 @@ fn find_cpio_entry(path: &Path) -> Option<String> {
             break;
         }
 
-        let namesize =
-            u32::from_str_radix(std::str::from_utf8(&header[94..102]).ok()?, 16).ok()?;
-        let filesize =
-            u64::from_str_radix(std::str::from_utf8(&header[54..62]).ok()?, 16).ok()?;
+        let namesize = u32::from_str_radix(std::str::from_utf8(&header[94..102]).ok()?, 16).ok()?;
+        let filesize = u64::from_str_radix(std::str::from_utf8(&header[54..62]).ok()?, 16).ok()?;
 
         let mut name_buf = vec![0u8; namesize as usize];
         file.read_exact(&mut name_buf).ok()?;
-        let name = std::str::from_utf8(&name_buf)
-            .ok()?
-            .trim_end_matches('\0');
+        let name = std::str::from_utf8(&name_buf).ok()?.trim_end_matches('\0');
 
         // "TRAILER!!!" is the standard CPIO end-of-archive marker.
         if name == "TRAILER!!!" {
@@ -386,10 +387,11 @@ fn resolve_entry(entry: &Option<String>, initrd: &Option<PathBuf>) -> Option<Str
         return Some(e.clone());
     }
     if let Some(path) = initrd
-        && let Some(detected) = find_cpio_entry(path) {
-            info!(entry = %detected, "auto-detected driver entry point");
-            return Some(detected);
-        }
+        && let Some(detected) = find_cpio_entry(path)
+    {
+        info!(entry = %detected, "auto-detected driver entry point");
+        return Some(detected);
+    }
     None
 }
 
@@ -530,10 +532,7 @@ impl From<String> for Exec {
 /// Guest stdout is captured in the [`GuestConfig`] returned by
 /// [`create_sandbox`].  Call [`GuestConfig::drain_output`] after
 /// `run()` to retrieve what the guest printed.
-pub fn run(
-    sandbox: &mut MultiUseSandbox,
-    exec: impl Into<Exec>,
-) -> hyperlight_host::Result<()> {
+pub fn run(sandbox: &mut MultiUseSandbox, exec: impl Into<Exec>) -> hyperlight_host::Result<()> {
     match exec.into() {
         Exec::Code(s) => sandbox.call::<()>("Exec", s),
         Exec::File(path) => {
@@ -572,7 +571,9 @@ pub fn restore(
     listen_ports: Option<ListenPorts>,
 ) -> hyperlight_host::Result<(MultiUseSandbox, GuestConfig)> {
     if mounts.is_empty() {
-        debug!("restore: no mounts provided — if the snapshot was saved with mounts, hostfs operations will fail");
+        debug!(
+            "restore: no mounts provided — if the snapshot was saved with mounts, hostfs operations will fail"
+        );
     }
     let config = GuestConfig {
         cmdline: String::new(),
@@ -680,10 +681,7 @@ mod tests {
     }
 
     fn test_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "hl-test-{label}-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("hl-test-{label}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -692,18 +690,14 @@ mod tests {
     fn find_cpio_entry_detects_drivers() {
         let dir = test_dir("cpio-drivers");
         // pydriver in usr/local/bin
-        let cpio = write_cpio(&dir, "py.cpio", &[
-            ("usr/local/bin/hl_pydriver", b"ELF"),
-        ]);
+        let cpio = write_cpio(&dir, "py.cpio", &[("usr/local/bin/hl_pydriver", b"ELF")]);
         assert_eq!(
             find_cpio_entry(&cpio),
             Some("/usr/local/bin/hl_pydriver".to_string())
         );
 
         // nodedriver in usr/bin
-        let cpio = write_cpio(&dir, "node.cpio", &[
-            ("usr/bin/hl_nodedriver", b"ELF"),
-        ]);
+        let cpio = write_cpio(&dir, "node.cpio", &[("usr/bin/hl_nodedriver", b"ELF")]);
         assert_eq!(
             find_cpio_entry(&cpio),
             Some("/usr/bin/hl_nodedriver".to_string())
@@ -716,10 +710,11 @@ mod tests {
     fn find_cpio_entry_skips_non_drivers() {
         let dir = test_dir("cpio-nodriver");
         let big_data = vec![0xABu8; 1024];
-        let cpio = write_cpio(&dir, "test.cpio", &[
-            ("etc/big_config", &big_data),
-            ("usr/bin/python3", b"ELF"),
-        ]);
+        let cpio = write_cpio(
+            &dir,
+            "test.cpio",
+            &[("etc/big_config", &big_data), ("usr/bin/python3", b"ELF")],
+        );
         assert_eq!(find_cpio_entry(&cpio), None);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -729,10 +724,14 @@ mod tests {
     fn find_cpio_entry_skips_data_to_find_driver() {
         let dir = test_dir("cpio-skip-data");
         let big_data = vec![0xABu8; 4096];
-        let cpio = write_cpio(&dir, "test.cpio", &[
-            ("etc/config", &big_data),
-            ("usr/local/bin/hl_pydriver", b"ELF"),
-        ]);
+        let cpio = write_cpio(
+            &dir,
+            "test.cpio",
+            &[
+                ("etc/config", &big_data),
+                ("usr/local/bin/hl_pydriver", b"ELF"),
+            ],
+        );
         assert_eq!(
             find_cpio_entry(&cpio),
             Some("/usr/local/bin/hl_pydriver".to_string())
@@ -766,12 +765,15 @@ mod tests {
         if !mounts.is_empty() {
             cmdline.push_str(" vfs.fstab=[");
             for (i, m) in mounts.iter().enumerate() {
-                if i > 0 { cmdline.push(' '); }
+                if i > 0 {
+                    cmdline.push(' ');
+                }
                 let flags = if m.readonly { "0x1" } else { "0x0" };
                 std::fmt::Write::write_fmt(
                     &mut cmdline,
                     format_args!("{i}:{}:hostfs:{flags}::mkmp", m.guest_path),
-                ).unwrap();
+                )
+                .unwrap();
             }
             cmdline.push(']');
         }
@@ -793,24 +795,27 @@ mod tests {
         // This replicates the logic in hcall.c fb_encode_generic.
         let c_bytes = build_c_generic_fb(
             "fs_stat",
-            2,  // HL_FCT_HOST
-            9,  // HL_RT_VECBYTES (= hlsizeprefixedbuffer)
-            &[
-                CParam::Int(0),
-                CParam::Str("hello.txt"),
-            ],
+            2, // HL_FCT_HOST
+            9, // HL_RT_VECBYTES (= hlsizeprefixedbuffer)
+            &[CParam::Int(0), CParam::Str("hello.txt")],
         );
 
         eprintln!("C-encoded ({} bytes):", c_bytes.len());
         for (i, chunk) in c_bytes.chunks(16).enumerate() {
             eprint!("  {:04x}:", i * 16);
-            for b in chunk { eprint!(" {:02x}", b); }
+            for b in chunk {
+                eprint!(" {:02x}", b);
+            }
             eprintln!();
         }
 
         // Try to parse the C-style bytes.
         let c_parsed = FunctionCall::try_from(c_bytes.as_slice());
-        assert!(c_parsed.is_ok(), "C-encoded FunctionCall should parse: {:?}", c_parsed.err());
+        assert!(
+            c_parsed.is_ok(),
+            "C-encoded FunctionCall should parse: {:?}",
+            c_parsed.err()
+        );
         let c_parsed = c_parsed.unwrap();
         assert_eq!(c_parsed.function_name, "fs_stat");
     }
@@ -822,21 +827,23 @@ mod tests {
 
         let c_bytes = build_c_generic_fb(
             "fs_write_bytes",
-            2,  // HL_FCT_HOST
-            0,  // HL_RT_INT
+            2, // HL_FCT_HOST
+            0, // HL_RT_INT
             &[
-                CParam::Int(0),          // mount_idx
-                CParam::Str("written.txt"),  // path
-                CParam::ULong(0),        // offset
-                CParam::Int(0),          // append
-                CParam::VecBytes(&[]),   // empty data
+                CParam::Int(0),             // mount_idx
+                CParam::Str("written.txt"), // path
+                CParam::ULong(0),           // offset
+                CParam::Int(0),             // append
+                CParam::VecBytes(&[]),      // empty data
             ],
         );
 
         eprintln!("C-encoded fs_write_bytes ({} bytes):", c_bytes.len());
         for (i, chunk) in c_bytes.chunks(16).enumerate() {
             eprint!("  {:04x}:", i * 16);
-            for b in chunk { eprint!(" {:02x}", b); }
+            for b in chunk {
+                eprint!(" {:02x}", b);
+            }
             eprintln!();
         }
 
@@ -856,11 +863,17 @@ mod tests {
         VecBytes(&'a [u8]),
     }
 
-    fn align4(x: usize) -> usize { (x + 3) & !3 }
-    fn align2(x: usize) -> usize { (x + 1) & !1 }
+    fn align4(x: usize) -> usize {
+        (x + 3) & !3
+    }
+    fn align2(x: usize) -> usize {
+        (x + 1) & !1
+    }
     /// Smallest value >= x that is congruent to 4 mod 8.
     /// Ensures u64 field at (result + 4) is 8-byte aligned.
-    fn align8_off4(x: usize) -> usize { ((x + 3) & !7) | 4 }
+    fn align8_off4(x: usize) -> usize {
+        ((x + 3) & !7) | 4
+    }
 
     fn ew16(buf: &mut [u8], pos: usize, val: u16) {
         buf[pos] = val as u8;
@@ -889,10 +902,24 @@ mod tests {
         const VW_ULONG_TBL_SZ: usize = 12;
         const VW_REF_TBL_SZ: usize = 8;
 
-        struct PLay { pvt: usize, ptbl: usize, vvt: usize, vtbl: usize, vdata: usize, vvtsz: usize, vtblsz: usize }
+        struct PLay {
+            pvt: usize,
+            ptbl: usize,
+            vvt: usize,
+            vtbl: usize,
+            vdata: usize,
+            vvtsz: usize,
+            vtblsz: usize,
+        }
 
         let mut pos: usize = 36;
-        let pvec = if np > 0 { let v = align4(pos); pos = v + 4 + np * 4; v } else { 0 };
+        let pvec = if np > 0 {
+            let v = align4(pos);
+            pos = v + 4 + np * 4;
+            v
+        } else {
+            0
+        };
 
         let mut pl: Vec<PLay> = Vec::new();
         for param in params.iter().take(np) {
@@ -909,7 +936,15 @@ mod tests {
                 _ => align4(vvt + vvtsz),
             };
             pos = vtbl + vtblsz;
-            pl.push(PLay { pvt, ptbl, vvt, vtbl, vdata: 0, vvtsz, vtblsz });
+            pl.push(PLay {
+                pvt,
+                ptbl,
+                vvt,
+                vtbl,
+                vdata: 0,
+                vvtsz,
+                vtblsz,
+            });
         }
 
         // Variable-length data
@@ -976,13 +1011,17 @@ mod tests {
             // Parameter table
             ew32(&mut buf, layout.ptbl, (layout.ptbl - layout.pvt) as u32);
             let pv_type = match param {
-                CParam::Int(_) => 1u8, // HL_PV_HLINT
-                CParam::ULong(_) => 4u8, // HL_PV_HLULONG (was incorrectly 5=hlfloat!)
-                CParam::Str(_) => 7u8, // HL_PV_HLSTRING
+                CParam::Int(_) => 1u8,      // HL_PV_HLINT
+                CParam::ULong(_) => 4u8,    // HL_PV_HLULONG (was incorrectly 5=hlfloat!)
+                CParam::Str(_) => 7u8,      // HL_PV_HLSTRING
                 CParam::VecBytes(_) => 9u8, // HL_PV_HLVECBYTES
             };
             buf[layout.ptbl + 4] = pv_type;
-            ew32(&mut buf, layout.ptbl + 8, (layout.vtbl - (layout.ptbl + 8)) as u32);
+            ew32(
+                &mut buf,
+                layout.ptbl + 8,
+                (layout.vtbl - (layout.ptbl + 8)) as u32,
+            );
 
             // Value vtable
             ew16(&mut buf, layout.vvt, layout.vvtsz as u16);
@@ -1000,12 +1039,20 @@ mod tests {
                     ew64(&mut buf, layout.vtbl + 4, *v);
                 }
                 CParam::Str(s) => {
-                    ew32(&mut buf, layout.vtbl + 4, (layout.vdata - (layout.vtbl + 4)) as u32);
+                    ew32(
+                        &mut buf,
+                        layout.vtbl + 4,
+                        (layout.vdata - (layout.vtbl + 4)) as u32,
+                    );
                     ew32(&mut buf, layout.vdata, s.len() as u32);
                     buf[layout.vdata + 4..layout.vdata + 4 + s.len()].copy_from_slice(s.as_bytes());
                 }
                 CParam::VecBytes(v) => {
-                    ew32(&mut buf, layout.vtbl + 4, (layout.vdata - (layout.vtbl + 4)) as u32);
+                    ew32(
+                        &mut buf,
+                        layout.vtbl + 4,
+                        (layout.vdata - (layout.vtbl + 4)) as u32,
+                    );
                     ew32(&mut buf, layout.vdata, v.len() as u32);
                     if !v.is_empty() {
                         buf[layout.vdata + 4..layout.vdata + 4 + v.len()].copy_from_slice(v);
@@ -1029,8 +1076,8 @@ mod tests {
 
         let c_bytes = build_c_generic_fb(
             "fs_read_bytes",
-            2,  // HL_FCT_HOST
-            9,  // HL_RT_VECBYTES
+            2, // HL_FCT_HOST
+            9, // HL_RT_VECBYTES
             &[
                 CParam::Int(0),
                 CParam::Str("test.txt"),
@@ -1042,12 +1089,18 @@ mod tests {
         eprintln!("C-encoded fs_read_bytes ({} bytes):", c_bytes.len());
         for (i, chunk) in c_bytes.chunks(16).enumerate() {
             eprint!("  {:04x}:", i * 16);
-            for b in chunk { eprint!(" {:02x}", b); }
+            for b in chunk {
+                eprint!(" {:02x}", b);
+            }
             eprintln!();
         }
 
         let c_parsed = FunctionCall::try_from(c_bytes.as_slice());
-        assert!(c_parsed.is_ok(), "C-encoded FunctionCall should parse: {:?}", c_parsed.err());
+        assert!(
+            c_parsed.is_ok(),
+            "C-encoded FunctionCall should parse: {:?}",
+            c_parsed.err()
+        );
         let c_parsed = c_parsed.unwrap();
         assert_eq!(c_parsed.function_name, "fs_read_bytes");
         assert_eq!(c_parsed.parameters.as_ref().unwrap().len(), 4);
@@ -1062,8 +1115,8 @@ mod tests {
         // First, fix the discriminant and test with type=4 (the REAL HL_PV_HLULONG)
         let c_bytes = build_c_generic_fb(
             "fs_write_bytes",
-            2,  // HL_FCT_HOST
-            0,  // HL_RT_INT
+            2, // HL_FCT_HOST
+            0, // HL_RT_INT
             &[
                 CParam::Int(0),
                 CParam::Str("written.txt"),
@@ -1076,7 +1129,9 @@ mod tests {
         eprintln!("C-encoded fs_write_bytes ({} bytes):", c_bytes.len());
         for (i, chunk) in c_bytes.chunks(16).enumerate() {
             eprint!("  {:04x}:", i * 16);
-            for b in chunk { eprint!(" {:02x}", b); }
+            for b in chunk {
+                eprint!(" {:02x}", b);
+            }
             eprintln!();
         }
 
@@ -1090,18 +1145,20 @@ mod tests {
 
     #[test]
     fn fstab_cmdline_multiple_mixed_mounts() {
-        let mounts = [Mount::rw("/a", "/mnt/a"),
-            Mount::ro("/b", "/mnt/b")];
+        let mounts = [Mount::rw("/a", "/mnt/a"), Mount::ro("/b", "/mnt/b")];
         let mut cmdline = "unikraft-hyperlight /entry".to_string();
         if !mounts.is_empty() {
             cmdline.push_str(" vfs.fstab=[");
             for (i, m) in mounts.iter().enumerate() {
-                if i > 0 { cmdline.push(' '); }
+                if i > 0 {
+                    cmdline.push(' ');
+                }
                 let flags = if m.readonly { "0x1" } else { "0x0" };
                 std::fmt::Write::write_fmt(
                     &mut cmdline,
                     format_args!("{i}:{}:hostfs:{flags}::mkmp", m.guest_path),
-                ).unwrap();
+                )
+                .unwrap();
             }
             cmdline.push(']');
         }

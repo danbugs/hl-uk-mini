@@ -1,23 +1,22 @@
 mod common;
 
-use common::{host_ip, net_probe, require_rootfs, UNUSED_PORT};
-use hyperlight_unikraft::{
-    AllowList, BlockList, NetworkPolicy,
-    create_sandbox, init, run,
-};
+use common::{UNUSED_PORT, host_ip, net_probe, require_rootfs};
+use hyperlight_unikraft::{AllowList, BlockList, NetworkPolicy, create_sandbox, init, run};
 
 /// Networking disabled by default — guest socket calls fail because
 /// net_* host functions aren't registered at all.
 #[test]
 fn net_policy_disabled_by_default() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs), &None, 256, Vec::new(), None, None,
-    ).unwrap();
+    let (usandbox, cfg) =
+        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
     let mut sandbox = init(usandbox).unwrap();
     // socket() calls the net_socket host function which isn't registered,
     // causing the guest to abort — run() returns an error.
-    let result = run(&mut sandbox, "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); print('SOCKET_OK')");
+    let result = run(
+        &mut sandbox,
+        "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); print('SOCKET_OK')",
+    );
     let output = cfg.drain_output();
     assert!(
         result.is_err() || !output.contains("SOCKET_OK"),
@@ -28,13 +27,10 @@ fn net_policy_disabled_by_default() {
 /// AllowAll blocks link-local addresses (cloud metadata service).
 #[test]
 fn net_policy_allowall_blocks_link_local() {
-    let output = net_probe(
-        Some(NetworkPolicy::AllowAll),
-        None,
-        "169.254.169.254",
-        80,
-    );
-    if output == "SKIP" { return; }
+    let output = net_probe(Some(NetworkPolicy::AllowAll), None, "169.254.169.254", 80);
+    if output == "SKIP" {
+        return;
+    }
     assert!(
         output.contains("TCP_BLOCKED"),
         "expected link-local 169.254.169.254 to be TCP-blocked even with AllowAll, got: {output:?}",
@@ -57,7 +53,9 @@ fn net_policy_allowall_permits_loopback() {
         "127.0.0.1",
         UNUSED_PORT,
     );
-    if output == "SKIP" { return; }
+    if output == "SKIP" {
+        return;
+    }
     // Loopback should pass the policy check.  TCP gives ECONNREFUSED
     // (nothing listening), not EACCES.  UDP sendto succeeds.
     assert!(
@@ -79,13 +77,10 @@ fn net_policy_allowall_permits_loopback() {
 fn net_policy_allowlist_permits() {
     let ip = host_ip();
     let al = AllowList::from_hosts(&[ip.as_str()]).unwrap();
-    let output = net_probe(
-        Some(NetworkPolicy::AllowList(al)),
-        None,
-        &ip,
-        UNUSED_PORT,
-    );
-    if output == "SKIP" { return; }
+    let output = net_probe(Some(NetworkPolicy::AllowList(al)), None, &ip, UNUSED_PORT);
+    if output == "SKIP" {
+        return;
+    }
     assert!(
         !output.contains("TCP_BLOCKED"),
         "expected allowlisted IP {ip} to pass TCP policy check, got: {output:?}",
@@ -100,13 +95,10 @@ fn net_policy_allowlist_permits() {
 #[test]
 fn net_policy_allowlist_blocks() {
     let al = AllowList::from_hosts(&["93.184.216.34"]).unwrap();
-    let output = net_probe(
-        Some(NetworkPolicy::AllowList(al)),
-        None,
-        "1.2.3.4",
-        80,
-    );
-    if output == "SKIP" { return; }
+    let output = net_probe(Some(NetworkPolicy::AllowList(al)), None, "1.2.3.4", 80);
+    if output == "SKIP" {
+        return;
+    }
     assert!(
         output.contains("TCP_BLOCKED"),
         "expected unlisted IP 1.2.3.4 to be TCP-blocked by AllowList, got: {output:?}",
@@ -121,13 +113,10 @@ fn net_policy_allowlist_blocks() {
 #[test]
 fn net_policy_blocklist_blocks() {
     let bl = BlockList::from_hosts(&["1.2.3.4"]).unwrap();
-    let output = net_probe(
-        Some(NetworkPolicy::BlockList(bl)),
-        None,
-        "1.2.3.4",
-        80,
-    );
-    if output == "SKIP" { return; }
+    let output = net_probe(Some(NetworkPolicy::BlockList(bl)), None, "1.2.3.4", 80);
+    if output == "SKIP" {
+        return;
+    }
     assert!(
         output.contains("TCP_BLOCKED"),
         "expected listed IP 1.2.3.4 to be TCP-blocked by BlockList, got: {output:?}",
@@ -145,13 +134,10 @@ fn net_policy_blocklist_blocks() {
 fn net_policy_blocklist_permits() {
     let ip = host_ip();
     let bl = BlockList::from_hosts(&["1.2.3.4"]).unwrap();
-    let output = net_probe(
-        Some(NetworkPolicy::BlockList(bl)),
-        None,
-        &ip,
-        UNUSED_PORT,
-    );
-    if output == "SKIP" { return; }
+    let output = net_probe(Some(NetworkPolicy::BlockList(bl)), None, &ip, UNUSED_PORT);
+    if output == "SKIP" {
+        return;
+    }
     assert!(
         !output.contains("TCP_BLOCKED"),
         "expected unlisted IP {ip} to pass TCP BlockList policy check, got: {output:?}",

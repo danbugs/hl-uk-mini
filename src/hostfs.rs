@@ -53,7 +53,8 @@ pub(crate) fn register(
         let d = Dir::open_ambient_dir(host_path, ambient_authority()).map_err(|e| {
             hyperlight_host::HyperlightError::Error(format!(
                 "hostfs: failed to open mount {i} ({} -> {}): {e}",
-                host_path.display(), guest_path,
+                host_path.display(),
+                guest_path,
             ))
         })?;
         let ro_str = if *readonly { "ro" } else { "rw" };
@@ -132,9 +133,10 @@ pub(crate) fn register(
                 Ok(match d.open(&path) {
                     Ok(mut file) => {
                         if offset > 0
-                            && let Err(e) = file.seek(SeekFrom::Start(offset)) {
-                                return Ok(errno_vec(e));
-                            }
+                            && let Err(e) = file.seek(SeekFrom::Start(offset))
+                        {
+                            return Ok(errno_vec(e));
+                        }
                         let mut buf = vec![0u8; 4 + len];
                         match file.read(&mut buf[4..]) {
                             Ok(n) => {
@@ -251,15 +253,13 @@ pub(crate) fn register(
                 if check_ro(&ro, mount_idx as usize) {
                     return Ok(-libc::EROFS);
                 }
-                Ok(
-                    match d.open_with(&path, OpenOptions::new().write(true)) {
-                        Ok(f) => match f.set_len(length) {
-                            Ok(()) => 0,
-                            Err(e) => neg_errno(e),
-                        },
+                Ok(match d.open_with(&path, OpenOptions::new().write(true)) {
+                    Ok(f) => match f.set_len(length) {
+                        Ok(()) => 0,
                         Err(e) => neg_errno(e),
                     },
-                )
+                    Err(e) => neg_errno(e),
+                })
             },
         )?;
     }
@@ -281,7 +281,11 @@ pub(crate) fn register(
                 let Some(d) = dirs.get(mount_idx as usize) else {
                     return Ok({ -libc::EINVAL }.to_le_bytes().to_vec());
                 };
-                let path = if path.is_empty() { ".".to_string() } else { path };
+                let path = if path.is_empty() {
+                    ".".to_string()
+                } else {
+                    path
+                };
                 Ok(match d.read_dir(&path) {
                     Ok(entries) => {
                         let mut buf = Vec::with_capacity(256);
@@ -289,10 +293,7 @@ pub(crate) fn register(
                         buf.extend(0u32.to_le_bytes()); // count placeholder
                         let mut count = 0u32;
                         for entry in entries.flatten() {
-                            let is_dir = entry
-                                .metadata()
-                                .map(|m| m.is_dir())
-                                .unwrap_or(false);
+                            let is_dir = entry.metadata().map(|m| m.is_dir()).unwrap_or(false);
                             let name = entry.file_name().to_string_lossy().into_owned();
                             let name_bytes = name.as_bytes();
                             buf.push(is_dir as u8);

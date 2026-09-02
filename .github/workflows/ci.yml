@@ -1,0 +1,266 @@
+name: CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Lint ──────────────────────────────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+  # ── Spell check ──────────────────────────────────────────────
+  typos:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f # v1.49.0
+
+  # ── Kernel verify ────────────────────────────────────────────
+  kernel-verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+
+      - name: Verify kernel builds from source
+        run: just verify-kernel
+
+  # ── Test ──────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+
+      - name: Cache rootfs CPIOs
+        id: rootfs-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build-elfloader
+          key: rootfs-all-${{ hashFiles('drivers/**', 'examples/agent/custom/Dockerfile') }}
+
+      - name: Install cpio
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends cpio
+
+      - name: Install .NET SDK
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Install Go
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.24"
+          cache: false
+
+      - name: Build all rootfs images
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+        run: just build-all-rootfs
+
+      - name: cargo test
+        run: cargo test --all-targets --locked
+
+  # ── Conformance ──────────────────────────────────────────────
+  conformance:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+
+      - name: Cache rootfs CPIOs
+        id: rootfs-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build-elfloader
+          key: rootfs-conformance-${{ hashFiles('drivers/python/**', 'conformance/python/**') }}
+
+      - name: Install cpio
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends cpio
+
+      - name: Build conformance rootfs
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+        run: |
+          just build-rootfs python
+          just build-conformance python
+
+      - name: Run CPython conformance suite
+        run: |
+          just conformance python 2>&1 | tee conformance-output.txt
+
+      - name: Post conformance summary
+        if: always()
+        run: |
+          if [ -f conformance-output.txt ]; then
+            echo '## CPython Conformance Results' >> "$GITHUB_STEP_SUMMARY"
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            summary=$(grep '^SUMMARY ' conformance-output.txt || echo "no summary")
+            echo "**${summary}**" >> "$GITHUB_STEP_SUMMARY"
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            # List any non-PASS results
+            fails=$(grep '^RESULT ' conformance-output.txt | grep -v 'status=PASS' || true)
+            if [ -n "$fails" ]; then
+              echo '### Non-passing modules' >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+              echo "$fails" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+  # ── Benchmarks ───────────────────────────────────────────────
+  bench:
+    name: "bench (${{ matrix.runtime }}) — check results ↗"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # push to gh-pages
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [python, agent-slim, agent]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+
+      - name: Cache rootfs CPIO
+        id: rootfs-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build-elfloader/${{ matrix.runtime }}-rootfs.cpio
+          key: rootfs-${{ matrix.runtime }}-${{ hashFiles('drivers/**') }}
+
+      - name: Install cpio
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends cpio
+
+      - name: Build rootfs
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+        run: just build-rootfs ${{ matrix.runtime }}
+
+      - name: Run benchmarks
+        run: |
+          just bench ${{ matrix.runtime }} 2>&1 | tee bench-output.txt
+
+      - name: Post results to step summary
+        if: always()
+        run: |
+          echo '## Benchmark Results — ${{ matrix.runtime }}' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # Extract the summary table (between the box footer and the JSON line)
+          awk '/^╚.*╝/{f=1;next} f && /JSON:/{exit} f{print}' bench-output.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::Benchmark results posted to the Summary tab of this workflow run"
+
+      - name: Store benchmark results
+        if: always()
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        with:
+          name: ${{ matrix.runtime }} benchmarks
+          tool: customSmallerIsBetter
+          output-file-path: bench-results.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: dev/bench/${{ matrix.runtime }}
+          # Push to gh-pages only on main merges (not on PRs)
+          auto-push: ${{ github.event_name == 'push' }}
+          # Fail the job if a PR regresses perf by >15%
+          fail-on-alert: ${{ github.event_name == 'pull_request' }}
+          alert-threshold: '115%'
+          comment-on-alert: false
+
+  # ── Gate ──────────────────────────────────────────────────────
+  ci-passed:
+    if: always()
+    needs: [lint, typos, kernel-verify, test, conformance, bench]
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Verify all jobs passed
+        run: |
+          jq --exit-status 'all(.result == "success")' \
+            <<< '${{ toJson(needs) }}'

@@ -141,9 +141,7 @@ impl AllowList {
                     found = true;
                 }
                 if !found {
-                    return Err(format!(
-                        "hostname {entry:?} resolved to zero addresses"
-                    ));
+                    return Err(format!("hostname {entry:?} resolved to zero addresses"));
                 }
                 hostnames.push(entry.to_string());
             }
@@ -220,9 +218,7 @@ impl BlockList {
                     found = true;
                 }
                 if !found {
-                    return Err(format!(
-                        "hostname {entry:?} resolved to zero addresses"
-                    ));
+                    return Err(format!("hostname {entry:?} resolved to zero addresses"));
                 }
                 hostnames.push(entry.to_string());
             }
@@ -316,10 +312,7 @@ fn dns_resolvers() -> &'static HashSet<IpAddr> {
         }
         #[cfg(windows)]
         {
-            if let Ok(output) = std::process::Command::new("ipconfig")
-                .arg("/all")
-                .output()
-            {
+            if let Ok(output) = std::process::Command::new("ipconfig").arg("/all").output() {
                 let text = String::from_utf8_lossy(&output.stdout);
                 let mut in_dns_block = false;
                 for line in text.lines() {
@@ -377,10 +370,7 @@ pub fn learn_ips_from_dns_response(data: &[u8], al: &AllowList) {
 
     // Check if the queried name matches any allowed hostname.
     let qname_lower = qname.to_lowercase();
-    let is_allowed_host = al
-        .hostnames
-        .iter()
-        .any(|h| h.to_lowercase() == qname_lower);
+    let is_allowed_host = al.hostnames.iter().any(|h| h.to_lowercase() == qname_lower);
     if !is_allowed_host {
         return;
     }

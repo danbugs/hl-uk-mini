@@ -7,10 +7,8 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use hyperlight_unikraft::{
-    AllowList, BlockList, Exec, ListenPorts, Mount, NetworkPolicy,
-    DEFAULT_SCRATCH_MB, SNAPSHOT_TAG,
-    create_sandbox, init, restore, run,
-    OciTag, Snapshot,
+    AllowList, BlockList, DEFAULT_SCRATCH_MB, Exec, ListenPorts, Mount, NetworkPolicy, OciTag,
+    SNAPSHOT_TAG, Snapshot, create_sandbox, init, restore, run,
 };
 
 /// Minimal Hyperlight host for Unikraft unikernels.
@@ -263,9 +261,7 @@ struct BenchParallelArgs {
 /// Entries without `=` are silently skipped. The first `=` is the
 /// split point, so values may contain `=`.
 fn parse_envs(raw: &[String]) -> Vec<(&str, &str)> {
-    raw.iter()
-        .filter_map(|e| e.split_once('='))
-        .collect()
+    raw.iter().filter_map(|e| e.split_once('=')).collect()
 }
 
 fn parse_mounts(raw: &[String]) -> Vec<Mount> {
@@ -334,10 +330,12 @@ fn resolve_exec(
         (Some(path), _) => {
             // Verify the file is valid UTF-8 (i.e. a script, not a binary)
             if std::fs::read_to_string(&path).is_err() && path.exists() {
-                let dir = path.parent()
+                let dir = path
+                    .parent()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| ".".into());
-                let name = path.file_name()
+                let name = path
+                    .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "binary".into());
                 return Err(
@@ -436,9 +434,7 @@ fn cmd_snapshot_save(args: SaveArgs) -> hyperlight_unikraft::hyperlight_host::Re
     Ok(())
 }
 
-fn cmd_snapshot_run(
-    args: SnapshotRunArgs,
-) -> hyperlight_unikraft::hyperlight_host::Result<()> {
+fn cmd_snapshot_run(args: SnapshotRunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
     let tag: OciTag = SNAPSHOT_TAG.parse().expect("valid OCI tag");
     let mounts = parse_mounts(&args.mounts);
     let (policy, listen) =
@@ -545,9 +541,9 @@ fn print_rss(label: &str) {
             .find(|l| l.starts_with("RssAnon:"))
             .and_then(|l| l.split_whitespace().nth(1))
             .and_then(|s| s.parse::<u64>().ok())
-        {
-            println!("BENCH {label} rss_mb={}", kb / 1024);
-        }
+    {
+        println!("BENCH {label} rss_mb={}", kb / 1024);
+    }
     // TODO: Windows — use GetProcessMemoryInfo for PrivateUsage
     #[cfg(not(target_os = "linux"))]
     let _ = label;
@@ -564,7 +560,14 @@ fn bench_cold(args: BenchColdArgs) -> hyperlight_unikraft::hyperlight_host::Resu
 
     for i in 0..args.samples {
         let t0 = Instant::now();
-        let (usandbox, _) = create_sandbox(&Some(args.initrd.clone()), &None, args.scratch_mb, Vec::new(), None, None)?;
+        let (usandbox, _) = create_sandbox(
+            &Some(args.initrd.clone()),
+            &None,
+            args.scratch_mb,
+            Vec::new(),
+            None,
+            None,
+        )?;
         let mut sandbox = init(usandbox)?;
         let boot_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
@@ -653,9 +656,7 @@ fn bench_warm_restore(args: BenchSnapArgs) -> hyperlight_unikraft::hyperlight_ho
         sandbox.restore(snap.clone())?;
         let restore_ms = t2.elapsed().as_secs_f64() * 1000.0;
 
-        println!(
-            "BENCH warm-restore sample={i} exec_ms={exec_ms:.3} restore_ms={restore_ms:.3}"
-        );
+        println!("BENCH warm-restore sample={i} exec_ms={exec_ms:.3} restore_ms={restore_ms:.3}");
         execs.push(exec_ms);
         restores.push(restore_ms);
     }
@@ -716,7 +717,8 @@ fn bench_parallel(args: BenchParallelArgs) -> hyperlight_unikraft::hyperlight_ho
                 barrier.wait();
                 let vm_start = Instant::now();
 
-                let (mut sandbox, _config) = restore(snap.clone(), Vec::new(), None, None).map_err(|e| e.to_string())?;
+                let (mut sandbox, _config) =
+                    restore(snap.clone(), Vec::new(), None, None).map_err(|e| e.to_string())?;
                 let mut execs = Vec::with_capacity(iterations);
 
                 for iter in 0..iterations {
@@ -770,9 +772,9 @@ fn bench_parallel(args: BenchParallelArgs) -> hyperlight_unikraft::hyperlight_ho
     print_rss("parallel");
 
     if !errors.is_empty() {
-        return Err(hyperlight_unikraft::hyperlight_host::HyperlightError::Error(
-            errors.join("; "),
-        ));
+        return Err(
+            hyperlight_unikraft::hyperlight_host::HyperlightError::Error(errors.join("; ")),
+        );
     }
     Ok(())
 }
@@ -868,10 +870,7 @@ mod tests {
 
     #[test]
     fn parse_multiple_mounts() {
-        let mounts = parse_mounts(&[
-            "/a:/mnt/a".into(),
-            "/b:/mnt/b:ro".into(),
-        ]);
+        let mounts = parse_mounts(&["/a:/mnt/a".into(), "/b:/mnt/b:ro".into()]);
         assert_eq!(mounts.len(), 2);
         assert!(!mounts[0].readonly);
         assert!(mounts[1].readonly);
