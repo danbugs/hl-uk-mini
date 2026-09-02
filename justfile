@@ -60,50 +60,47 @@ kernel_bin    := kernel_dir / "elfloader_hyperlight-x86_64"
 kernel_build  := kernel_dir / ".build"
 
 # Build the Unikraft elfloader kernel from submodule sources.
-# Requires: gcc, make, and the kernel submodules (git submodule update --init).
+# Uses Docker for reproducible builds — the same binary on every machine.
+# Requires: Docker, and the kernel submodules (git submodule update --init).
 [unix]
 build-kernel:
     #!/usr/bin/env bash
     set -euo pipefail
-    app="{{kernel_dir}}/app-elfloader"
-    uk="{{kernel_dir}}/unikraft"
-    libs="{{kernel_dir}}/libs"
-    build="{{kernel_build}}"
 
-    if [ ! -f "$uk/Makefile" ]; then
+    if [ ! -f "{{kernel_dir}}/unikraft/Makefile" ]; then
         echo "error: kernel submodules not initialised" >&2
         echo "run: git submodule update --init --recursive" >&2
         exit 1
     fi
 
-    mkdir -p "$build"
+    echo "==> Building kernel builder image..."
+    docker build -q -t hluk-kernel-builder \
+        -f "{{kernel_dir}}/Dockerfile.build" "{{kernel_dir}}/"
 
-    # The Unikraft build system constructs internal paths relative to
-    # app-elfloader's workdir/ layout.  Create symlinks so the default
-    # Makefile variables resolve correctly, then remove them after the
-    # build so the submodule stays pristine.
-    mkdir -p "$app/workdir/libs"
-    ln -sfn "$uk" "$app/workdir/unikraft"
-    ln -sfn "{{kernel_dir}}/libs/libelf" "$app/workdir/libs/libelf"
-    ln -sfn "$build" "$app/workdir/build"
-
-    cp "{{root_dir}}/defconfig-elfloader" "$app/.config"
-
-    # cd into app-elfloader so $(PWD) in its Makefile resolves correctly
-    pushd "$app" > /dev/null
-
-    # Expand defconfig into full .config (answer new prompts with defaults)
-    yes "" 2>/dev/null | make WITH_LWIP=n olddefconfig || true
-    make WITH_LWIP=n -j$(nproc)
-
-    popd > /dev/null
-
-    cp "$build/elfloader_hyperlight-x86_64" "{{kernel_bin}}"
-
-    # Clean up: remove symlinks and generated files from the submodule
-    rm -f "$app/.config" "$app/.config.old"
-    rm -f "$app/workdir/unikraft" "$app/workdir/libs/libelf" "$app/workdir/build"
-    rmdir "$app/workdir/libs" "$app/workdir" 2>/dev/null || true
+    echo "==> Building kernel inside Docker (reproducible toolchain)..."
+    docker run --rm \
+        -v "{{kernel_dir}}:/kernel" \
+        -v "{{root_dir}}/defconfig-elfloader:/defconfig-elfloader:ro" \
+        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+        hluk-kernel-builder bash -c '
+            set -euo pipefail
+            rm -rf .build
+            mkdir -p .build app-elfloader/workdir/libs
+            ln -sfn /kernel/unikraft app-elfloader/workdir/unikraft
+            ln -sfn /kernel/libs/libelf app-elfloader/workdir/libs/libelf
+            ln -sfn /kernel/.build app-elfloader/workdir/build
+            cp /defconfig-elfloader app-elfloader/.config
+            cd app-elfloader
+            yes "" 2>/dev/null | make WITH_LWIP=n olddefconfig || true
+            make WITH_LWIP=n -j$(nproc)
+            cd ..
+            cp .build/elfloader_hyperlight-x86_64 elfloader_hyperlight-x86_64
+            chown "$HOST_UID:$HOST_GID" elfloader_hyperlight-x86_64
+            chown -R "$HOST_UID:$HOST_GID" .build
+            rm -f app-elfloader/.config app-elfloader/.config.old
+            rm -f app-elfloader/workdir/unikraft app-elfloader/workdir/libs/libelf app-elfloader/workdir/build
+            rmdir app-elfloader/workdir/libs app-elfloader/workdir 2>/dev/null || true
+        '
 
     echo "==> Kernel built: {{kernel_bin}}"
     echo "    sha256: $(sha256sum "{{kernel_bin}}" | cut -d' ' -f1)"
@@ -116,35 +113,38 @@ verify-kernel:
     set -euo pipefail
     committed="$(sha256sum "{{kernel_bin}}" | cut -d' ' -f1)"
 
-    app="{{kernel_dir}}/app-elfloader"
-    uk="{{kernel_dir}}/unikraft"
-    libs="{{kernel_dir}}/libs"
-    build="{{kernel_build}}"
-
-    if [ ! -f "$uk/Makefile" ]; then
+    if [ ! -f "{{kernel_dir}}/unikraft/Makefile" ]; then
         echo "error: kernel submodules not initialised" >&2
         echo "run: git submodule update --init --recursive" >&2
         exit 1
     fi
 
-    mkdir -p "$build"
-    mkdir -p "$app/workdir/libs"
-    ln -sfn "$uk" "$app/workdir/unikraft"
-    ln -sfn "{{kernel_dir}}/libs/libelf" "$app/workdir/libs/libelf"
-    ln -sfn "$build" "$app/workdir/build"
+    docker build -q -t hluk-kernel-builder \
+        -f "{{kernel_dir}}/Dockerfile.build" "{{kernel_dir}}/"
 
-    cp "{{root_dir}}/defconfig-elfloader" "$app/.config"
+    docker run --rm \
+        -v "{{kernel_dir}}:/kernel" \
+        -v "{{root_dir}}/defconfig-elfloader:/defconfig-elfloader:ro" \
+        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+        hluk-kernel-builder bash -c '
+            set -euo pipefail
+            rm -rf .build
+            mkdir -p .build app-elfloader/workdir/libs
+            ln -sfn /kernel/unikraft app-elfloader/workdir/unikraft
+            ln -sfn /kernel/libs/libelf app-elfloader/workdir/libs/libelf
+            ln -sfn /kernel/.build app-elfloader/workdir/build
+            cp /defconfig-elfloader app-elfloader/.config
+            cd app-elfloader
+            yes "" 2>/dev/null | make WITH_LWIP=n olddefconfig > /dev/null 2>&1 || true
+            make WITH_LWIP=n -j$(nproc) > /dev/null 2>&1
+            cd ..
+            chown -R "$HOST_UID:$HOST_GID" .build
+            rm -f app-elfloader/.config app-elfloader/.config.old
+            rm -f app-elfloader/workdir/unikraft app-elfloader/workdir/libs/libelf app-elfloader/workdir/build
+            rmdir app-elfloader/workdir/libs app-elfloader/workdir 2>/dev/null || true
+        '
 
-    pushd "$app" > /dev/null
-    yes "" 2>/dev/null | make WITH_LWIP=n olddefconfig > /dev/null 2>&1 || true
-    make WITH_LWIP=n -j$(nproc) > /dev/null 2>&1
-    popd > /dev/null
-
-    rm -f "$app/.config" "$app/.config.old"
-    rm -f "$app/workdir/unikraft" "$app/workdir/libs/libelf" "$app/workdir/build"
-    rmdir "$app/workdir/libs" "$app/workdir" 2>/dev/null || true
-
-    fresh="$(sha256sum "$build/elfloader_hyperlight-x86_64" | cut -d' ' -f1)"
+    fresh="$(sha256sum "{{kernel_build}}/elfloader_hyperlight-x86_64" | cut -d' ' -f1)"
     if [ "$committed" = "$fresh" ]; then
         echo "✓ Kernel binary matches source (sha256: $committed)"
     else
