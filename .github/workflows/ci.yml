@@ -102,16 +102,7 @@ jobs:
           cache: false
 
       - name: Build all rootfs images
-        run: |
-          for runtime in python bash node dotnet-jit c rust go dotnet-aot agent-slim agent powershell; do
-            echo "::group::build-rootfs $runtime"
-            just build-rootfs "$runtime"
-            echo "::endgroup::"
-          done
-          # agent-custom uses a custom Dockerfile
-          echo "::group::build-rootfs agent-custom"
-          just build-rootfs agent-custom examples/agent/custom/Dockerfile
-          echo "::endgroup::"
+        run: just build-all-rootfs
 
       - name: cargo test
         run: cargo test --all-targets --locked
