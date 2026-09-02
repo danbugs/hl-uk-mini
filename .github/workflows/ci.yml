@@ -62,13 +62,6 @@ jobs:
 
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
 
-      - name: Install kernel build deps
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends \
-            build-essential gcc-12 bison flex libncurses-dev \
-            unzip wget python3
-
       - name: Verify kernel builds from source
         run: just verify-kernel
 
@@ -222,8 +215,7 @@ jobs:
   # ── Gate ──────────────────────────────────────────────────────
   ci-passed:
     if: always()
-    # TODO: add kernel-verify once committed binary is rebuilt on ubuntu-latest + gcc-12
-    needs: [lint, typos, test, conformance, bench]
+    needs: [lint, typos, kernel-verify, test, conformance, bench]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
