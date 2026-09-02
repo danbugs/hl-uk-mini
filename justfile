@@ -38,22 +38,24 @@ scratch_agent_custom := "256"
 
 # Internal: resolve per-runtime scratch MiB (single source of truth).
 # Used by run, snapshot-save, bench, and conformance recipes.
-[private, unix]
+# Uses bash shebang so it works on both Linux and Windows (Git Bash).
+[private]
 _scratch-mb runtime:
-    @case "{{runtime}}" in \
-        c)            echo "{{scratch_c}}" ;; \
-        rust)         echo "{{scratch_rust}}" ;; \
-        go)           echo "{{scratch_go}}" ;; \
-        bash)         echo "{{scratch_bash}}" ;; \
-        python)       echo "{{scratch_python}}" ;; \
-        dotnet-aot)   echo "{{scratch_dotnet_aot}}" ;; \
-        node)         echo "{{scratch_node}}" ;; \
-        dotnet-jit)   echo "{{scratch_dotnet_jit}}" ;; \
-        powershell)   echo "{{scratch_powershell}}" ;; \
-        agent)        echo "{{scratch_agent}}" ;; \
-        agent-slim)   echo "{{scratch_agent_slim}}" ;; \
-        agent-custom) echo "{{scratch_agent_custom}}" ;; \
-        *)            echo "256" ;; \
+    #!/usr/bin/env bash
+    case "{{runtime}}" in
+        c)            echo "{{scratch_c}}" ;;
+        rust)         echo "{{scratch_rust}}" ;;
+        go)           echo "{{scratch_go}}" ;;
+        bash)         echo "{{scratch_bash}}" ;;
+        python)       echo "{{scratch_python}}" ;;
+        dotnet-aot)   echo "{{scratch_dotnet_aot}}" ;;
+        node)         echo "{{scratch_node}}" ;;
+        dotnet-jit)   echo "{{scratch_dotnet_jit}}" ;;
+        powershell)   echo "{{scratch_powershell}}" ;;
+        agent)        echo "{{scratch_agent}}" ;;
+        agent-slim)   echo "{{scratch_agent_slim}}" ;;
+        agent-custom) echo "{{scratch_agent_custom}}" ;;
+        *)            echo "256" ;;
     esac
 
 # ── Build ────────────────────────────────────────────────────────
@@ -176,8 +178,8 @@ verify-kernel:
     fi
 
 # Clean kernel build artifacts (does not touch the committed binary).
-[unix]
 clean-kernel:
+    #!/usr/bin/env bash
     rm -rf "{{kernel_build}}"
 
 # ── Rootfs ───────────────────────────────────────────────────────
@@ -283,7 +285,6 @@ list-runtimes:
 # ── Run ──────────────────────────────────────────────────────────
 
 # Build + run a script with a given runtime (e.g. just run python examples/python/hello.py)
-[unix]
 run runtime script *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -304,8 +305,9 @@ run runtime script *args:
         {{script}} {{args}}
 
 # Run from a pre-built snapshot (e.g. just run-snapshot .snapshots/python hello.py)
-[unix]
 run-snapshot snapshot script *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
     just build
     "{{root_dir}}/target/release/hluk" snapshot run \
         {{snapshot}} {{script}} {{args}}
@@ -313,7 +315,6 @@ run-snapshot snapshot script *args:
 # ── Snapshot ─────────────────────────────────────────────────────
 
 # Save a post-evolve snapshot (e.g. just snapshot-save python)
-[unix]
 snapshot-save runtime *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -366,7 +367,6 @@ test:
 # Usage:
 #   just bench python              # all modes, all workloads
 #   just bench python cold-snap    # one mode, all workloads
-[unix]
 bench runtime *mode:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -614,7 +614,6 @@ rebuild-conformance runtime:
 #
 # Modules listed in conformance/<runtime>/known_failures.toml are
 # skipped — any module NOT in that file is expected to pass.
-[unix]
 conformance runtime *modules:
     #!/usr/bin/env bash
     set -uo pipefail
