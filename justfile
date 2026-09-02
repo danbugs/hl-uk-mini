@@ -673,6 +673,7 @@ conformance runtime *modules:
     # Save a snapshot if one doesn't exist
     if [ ! -d "$snap_dir" ]; then
         echo "==> Saving conformance snapshot..."
+        mkdir -p "$(dirname "$snap_dir")"
         "$hluk" snapshot save \
             --initrd "$rootfs" \
             --scratch-mb "$scratch" \
