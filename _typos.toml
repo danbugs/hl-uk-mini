@@ -1,0 +1,3 @@
+[default.extend-words]
+# Windows error constant: ERROR_FILENAME_EXCED_RANGE (code 206)
+EXCED = "EXCED"
