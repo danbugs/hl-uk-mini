@@ -8,9 +8,12 @@
 #   just clean
 #
 # TODO: add `just pull-rootfs <runtime>` to pull pre-built rootfs from registry
-# TODO: Windows build-rootfs support (currently requires WSL)
+# Rootfs images are built with Docker on Linux (see build-rootfs); on
+# Windows, copy the CPIOs into build-elfloader/ and use run/test/conformance.
 
-set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
+# Windows: every recipe runs under PowerShell 7 (pwsh, https://aka.ms/pwsh),
+# which must be on PATH; recipes that need Docker or a Linux toolchain say so.
+set windows-shell := ["pwsh", "-NoLogo", "-NoProfile", "-Command"]
 
 # Directories
 root_dir        := justfile_directory()
@@ -38,23 +41,22 @@ scratch_agent_custom := "256"
 
 # Internal: resolve per-runtime scratch MiB (single source of truth).
 # Used by run, snapshot-save, bench, and conformance recipes.
-[private, unix]
+# Pure `just` expression — no shell — so it works on every platform.
+[private]
 _scratch-mb runtime:
-    @case "{{runtime}}" in \
-        c)            echo "{{scratch_c}}" ;; \
-        rust)         echo "{{scratch_rust}}" ;; \
-        go)           echo "{{scratch_go}}" ;; \
-        bash)         echo "{{scratch_bash}}" ;; \
-        python)       echo "{{scratch_python}}" ;; \
-        dotnet-aot)   echo "{{scratch_dotnet_aot}}" ;; \
-        node)         echo "{{scratch_node}}" ;; \
-        dotnet-jit)   echo "{{scratch_dotnet_jit}}" ;; \
-        powershell)   echo "{{scratch_powershell}}" ;; \
-        agent)        echo "{{scratch_agent}}" ;; \
-        agent-slim)   echo "{{scratch_agent_slim}}" ;; \
-        agent-custom) echo "{{scratch_agent_custom}}" ;; \
-        *)            echo "256" ;; \
-    esac
+    @echo {{ if runtime == "c" { scratch_c } \
+        else if runtime == "rust" { scratch_rust } \
+        else if runtime == "go" { scratch_go } \
+        else if runtime == "bash" { scratch_bash } \
+        else if runtime == "python" { scratch_python } \
+        else if runtime == "dotnet-aot" { scratch_dotnet_aot } \
+        else if runtime == "node" { scratch_node } \
+        else if runtime == "dotnet-jit" { scratch_dotnet_jit } \
+        else if runtime == "powershell" { scratch_powershell } \
+        else if runtime == "agent" { scratch_agent } \
+        else if runtime == "agent-slim" { scratch_agent_slim } \
+        else if runtime == "agent-custom" { scratch_agent_custom } \
+        else { "256" } }}
 
 # ── Build ────────────────────────────────────────────────────────
 
@@ -125,6 +127,10 @@ build-kernel:
     echo "==> Kernel built: {{kernel_bin}}"
     echo "    sha256: $(sha256sum "{{kernel_bin}}" | cut -d' ' -f1)"
 
+[windows]
+build-kernel:
+    @Write-Error "build-kernel needs Docker on Linux. Build there (just build-kernel) and commit kernel/elfloader_hyperlight-x86_64."; exit 1
+
 # Verify the committed kernel binary matches a fresh build.
 # Returns exit 0 if they match, exit 1 if they differ.
 [unix]
@@ -175,10 +181,18 @@ verify-kernel:
         exit 1
     fi
 
+[windows]
+verify-kernel:
+    @Write-Error "verify-kernel needs Docker on Linux; run it there."; exit 1
+
 # Clean kernel build artifacts (does not touch the committed binary).
 [unix]
 clean-kernel:
     rm -rf "{{kernel_build}}"
+
+[windows]
+clean-kernel:
+    if (Test-Path "{{kernel_build}}") { Remove-Item -Recurse -Force "{{kernel_build}}" }
 
 # ── Rootfs ───────────────────────────────────────────────────────
 
@@ -232,11 +246,9 @@ build-rootfs runtime dockerfile="":
     (cd "$tmpdir" && find . | cpio -o -H newc --quiet > "$output")
     echo "==> Done: $output ($(du -h "$output" | cut -f1))"
 
-# TODO: Windows build-rootfs support
 [windows]
-build-rootfs runtime:
-    @echo "error: build-rootfs requires WSL on Windows"
-    @echo "Use: wsl just build-rootfs {{runtime}}"
+build-rootfs runtime dockerfile="":
+    @Write-Error "build-rootfs needs Docker + cpio on Linux. Build there (just build-rootfs {{runtime}}) and copy build-elfloader/{{runtime}}-rootfs.cpio here."; exit 1
 
 # Clean rebuild of a rootfs — pulls fresh base images, no Docker cache.
 # Also nukes stale snapshots. Use when base images or drivers change.
@@ -268,6 +280,10 @@ rebuild-rootfs runtime:
     # Invalidate snapshots built from the old rootfs
     rm -rf "{{snapshot_dir}}/{{runtime}}" "{{snapshot_dir}}/{{runtime}}-conformance"
     echo "==> Stale snapshots removed"
+
+[windows]
+rebuild-rootfs runtime:
+    @Write-Error "rebuild-rootfs needs Docker + cpio on Linux. Rebuild there (just rebuild-rootfs {{runtime}}) and copy build-elfloader/{{runtime}}-rootfs.cpio here."; exit 1
 
 # List available runtimes
 [unix]
@@ -303,12 +319,26 @@ run runtime script *args:
         --scratch-mb "$scratch" \
         {{script}} {{args}}
 
-# Run from a pre-built snapshot (e.g. just run-snapshot .snapshots/python hello.py)
-[unix]
-run-snapshot snapshot script *args:
+[windows]
+run runtime script *args:
+    #!pwsh
+    $ErrorActionPreference = 'Stop'
+    $rootfs = "{{build_dir}}/{{runtime}}-rootfs.cpio"
+    if (-not (Test-Path $rootfs)) { Write-Error "rootfs not found: $rootfs (build it on Linux and copy it here)" }
+    $scratch = just _scratch-mb "{{runtime}}"
     just build
-    "{{root_dir}}/target/release/hluk" snapshot run \
-        {{snapshot}} {{script}} {{args}}
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & "{{root_dir}}/target/release/hluk.exe" run --initrd $rootfs --scratch-mb $scratch {{script}} {{args}}
+    exit $LASTEXITCODE
+
+# Run from a pre-built snapshot (e.g. just snapshot-run .snapshots/python hello.py)
+[unix]
+snapshot-run snapshot script *args: build
+    "{{root_dir}}/target/release/hluk" snapshot run {{snapshot}} {{script}} {{args}}
+
+[windows]
+snapshot-run snapshot script *args: build
+    & "{{root_dir}}/target/release/hluk.exe" snapshot run {{snapshot}} {{script}} {{args}}; exit $LASTEXITCODE
 
 # ── Snapshot ─────────────────────────────────────────────────────
 
@@ -334,6 +364,19 @@ snapshot-save runtime *args:
         --scratch-mb "$scratch" \
         --output "{{snapshot_dir}}/{{runtime}}" {{args}}
 
+[windows]
+snapshot-save runtime *args:
+    #!pwsh
+    $ErrorActionPreference = 'Stop'
+    $rootfs = "{{build_dir}}/{{runtime}}-rootfs.cpio"
+    if (-not (Test-Path $rootfs)) { Write-Error "rootfs not found: $rootfs (build it on Linux and copy it here)" }
+    $scratch = just _scratch-mb "{{runtime}}"
+    just build
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    New-Item -ItemType Directory -Force "{{snapshot_dir}}" | Out-Null
+    & "{{root_dir}}/target/release/hluk.exe" snapshot save --initrd $rootfs --scratch-mb $scratch --output "{{snapshot_dir}}/{{runtime}}" {{args}}
+    exit $LASTEXITCODE
+
 # ── Examples ─────────────────────────────────────────────────────
 
 # Run the Python hello world example
@@ -355,11 +398,66 @@ example-powershell: (run "powershell" (examples_dir / "powershell" / "hello.ps1"
 # on the host first.  See examples/<runtime>/README.md for instructions,
 # then: just run <runtime> ./hello
 
+# ── Test binaries ────────────────────────────────────────────────
+
+# Build the compiled-language example binaries that tests/compiled.rs
+# mounts into the guest, into build-elfloader/bins/<runtime>/.  Linux
+# ELF output, so like build-rootfs this runs on Linux; copy
+# build-elfloader/bins/ to other hosts.  Needs gcc/g++, rustc, go and
+# the .NET SDK.
+[unix]
+build-test-bins:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bins="{{build_dir}}/bins"
+    rm -rf "$bins"
+    mkdir -p "$bins/c" "$bins/rust" "$bins/go" "$bins/dotnet-aot"
+    echo "==> C / C++"
+    for src in hello goodbye env_vars; do
+        gcc -O2 -Wall -static-pie -fPIE -o "$bins/c/$src" "{{examples_dir}}/c/$src.c"
+    done
+    g++ -O2 -Wall -static-pie -fPIE -o "$bins/c/hello_cpp" "{{examples_dir}}/c/hello_cpp.cpp"
+    echo "==> Rust"
+    for src in hello env_vars; do
+        rustc -C opt-level=2 -C target-feature=+crt-static -C relocation-model=pie \
+            -o "$bins/rust/$src" "{{examples_dir}}/rust/$src.rs"
+    done
+    echo "==> Go"
+    for src in hello env_vars; do
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildmode=pie -ldflags='-s -w' \
+            -o "$bins/go/$src" "{{examples_dir}}/go/$src.go"
+    done
+    echo "==> .NET AOT"
+    for proj in dotnet-aot dotnet-aot-envvars; do
+        dotnet publish "{{examples_dir}}/$proj" -c Release -r linux-musl-x64 -v q --nologo \
+            -o "$bins/dotnet-aot"
+    done
+    rm -f "$bins/dotnet-aot"/*.dbg
+    echo "==> Done:"
+    find "$bins" -type f | sort
+
+[windows]
+build-test-bins:
+    @Write-Error "build-test-bins needs a Linux toolchain. Build there (just build-test-bins) and copy build-elfloader/bins/ here."; exit 1
+
 # ── Test ─────────────────────────────────────────────────────────
 
-# Run integration tests
-test:
-    cargo test --manifest-path "{{root_dir}}/Cargo.toml"
+# Run all tests (unit + integration; integration tests need rootfs CPIOs)
+[unix]
+test *args:
+    cargo test --all-targets --manifest-path "{{root_dir}}/Cargo.toml" {{args}}
+
+# On Windows, Hyperlight pre-spawns 512 helper processes per test binary
+# unless told otherwise; the suite needs a few at a time, so give it a
+# small, lazily-spawned pool sized for the thread count.
+[windows]
+test *args:
+    #!pwsh
+    $env:HYPERLIGHT_MAX_SURROGATES = '8'
+    $env:HYPERLIGHT_INITIAL_SURROGATES = '0'
+    $env:RUST_TEST_THREADS = '4'
+    cargo test --all-targets --manifest-path "{{root_dir}}/Cargo.toml" {{args}}
+    exit $LASTEXITCODE
 
 # Run benchmarks for a runtime across all workloads and modes.
 #
@@ -555,6 +653,128 @@ bench runtime *mode:
     echo ""
     echo "  JSON: $jsonfile"
 
+[windows]
+bench runtime *mode:
+    #!pwsh
+    $ErrorActionPreference = 'Stop'
+    [Console]::OutputEncoding = [Text.Encoding]::UTF8
+    $hluk = "{{root_dir}}/target/release/hluk.exe"
+    $rootfs = "{{build_dir}}/{{runtime}}-rootfs.cpio"
+    $snapDir = "{{snapshot_dir}}/{{runtime}}"
+    $benchDir = "{{benchmarks_dir}}/{{runtime}}"
+
+    if (-not (Test-Path $rootfs)) { Write-Error "rootfs not found: $rootfs (build it on Linux and copy it here)" }
+    $scratch = just _scratch-mb "{{runtime}}"
+    just build
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    if (-not (Test-Path $snapDir)) {
+        Write-Output "==> Snapshot not found, saving first..."
+        New-Item -ItemType Directory -Force (Split-Path $snapDir) | Out-Null
+        & $hluk snapshot save --initrd $rootfs --scratch-mb $scratch --output $snapDir
+        if ($LASTEXITCODE -ne 0) { Write-Error "snapshot save failed" }
+    }
+
+    $samples = 20
+    $parallelVms = 4
+    $parallelIters = 10
+    $modes = "{{mode}}".Trim()
+    if (-not $modes) { $modes = "cold cold-snap warm-restore warm-stateful parallel" }
+
+    $workloads = @(Get-ChildItem $benchDir -File | Where-Object { $_.Extension -in '.py', '.js' } | Sort-Object Name)
+    if ($workloads.Count -eq 0) { Write-Error "no benchmark scripts in $benchDir" }
+
+    # Every BENCH line, tagged with its workload, for the summary below.
+    $lines = @()
+    foreach ($script in $workloads) {
+        $w = $script.BaseName
+        foreach ($m in ($modes -split '\s+')) {
+            Write-Output ""
+            Write-Output "════════════════════════════════════════════"
+            Write-Output "  {{runtime}} / $m / $w"
+            Write-Output "════════════════════════════════════════════"
+            $benchArgs = switch ($m) {
+                'cold'          { @('cold', '--initrd', $rootfs, '--scratch-mb', $scratch, '--samples', $samples, $script.FullName) }
+                'cold-snap'     { @('cold-snap', '--samples', $samples, $snapDir, $script.FullName) }
+                'warm-restore'  { @('warm-restore', '--samples', $samples, $snapDir, $script.FullName) }
+                'warm-stateful' { @('warm-stateful', '--samples', $samples, $snapDir, $script.FullName) }
+                'parallel'      { @('parallel', '--vms', $parallelVms, '--iterations', $parallelIters, $snapDir, $script.FullName) }
+                default         { Write-Error "unknown mode '$m'" }
+            }
+            $out = @(& $hluk bench @benchArgs 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ -match '^BENCH ' } | ForEach-Object { $_ -replace '^BENCH ', "BENCH [$w] " })
+            if ($LASTEXITCODE -ne 0) { Write-Error "hluk bench $m failed (exit $LASTEXITCODE)" }
+            $out | Write-Output
+            $lines += $out
+        }
+    }
+
+    # ── Compact summary table ──────────────────────────────────
+    # Same rows, layout and JSON as the bash recipe above.
+    $d = @{}
+    $wo = @()
+    foreach ($l in $lines) {
+        $f = $l -split ' '
+        $w = $f[1].Trim('[', ']')
+        if ($wo -notcontains $w) { $wo += $w }
+        if ($l -match 'median=') {
+            $key = switch ("$($f[2]) $($f[3])") {
+                'cold total_ms'           { 'cold' }
+                'cold-snap total_ms'      { 'snap' }
+                'warm-restore exec_ms'    { 'wrest' }
+                'warm-restore restore_ms' { 'rstr' }
+                'warm-stateful exec_ms'   { 'wstat' }
+                'parallel exec_ms'        { 'pexec' }
+                default                   { $null }
+            }
+            if ($key) { $d["${key}:$w"] = ($f[4] -split '=')[1] }
+        } elseif ($l -match 'throughput=([0-9.]+)') {
+            $d["pthr:$w"] = $Matches[1]
+        } elseif ($l -match 'snapshot_mib=([0-9.]+)') {
+            if (-not $d.ContainsKey("snap_sz:$w")) { $d["snap_sz:$w"] = $Matches[1] }
+        } elseif ($l -match 'rss_mb=([0-9.]+)') {
+            if (-not $d.ContainsKey("rss:$w") -or [double]$Matches[1] -gt [double]$d["rss:$w"]) { $d["rss:$w"] = $Matches[1] }
+        }
+    }
+
+    $jsonFile = "{{root_dir}}/bench-results.json"
+    Write-Output ""
+    Write-Output ""
+    Write-Output "╔══════════════════════════════════════════════════════════════╗"
+    Write-Output "║  Benchmark Summary — {{runtime}}                            ║"
+    Write-Output "╚══════════════════════════════════════════════════════════════╝"
+    if ($wo.Count -gt 0) {
+        $rows = @(
+            @('cold total (ms)', 'cold'), @('snap total (ms)', 'snap'),
+            @('warm-restore exec (ms)', 'wrest'), @('restore cost (ms)', 'rstr'),
+            @('warm-stateful exec (ms)', 'wstat'), @('parallel throughput (/s)', 'pthr'),
+            @('parallel exec (ms)', 'pexec'), @('snapshot size (MiB)', 'snap_sz'), @('RSS (MB)', 'rss'))
+        Write-Output ""
+        Write-Output ("  " + ("{0,-28}" -f '') + (($wo | ForEach-Object { "{0,12}" -f $_ }) -join ''))
+        Write-Output ("  " + ('-' * (28 + 12 * $wo.Count)))
+        foreach ($r in $rows) {
+            $vals = @($wo | ForEach-Object { if ($d.ContainsKey("$($r[1]):$_")) { $d["$($r[1]):$_"] } else { '-' } })
+            if (-not ($vals | Where-Object { $_ -ne '-' })) { continue }
+            Write-Output ("  " + ("{0,-28}" -f $r[0]) + (($vals | ForEach-Object { "{0,12}" -f $_ }) -join ''))
+        }
+        Write-Output ""
+
+        $units = @{ rss = 'MB'; snap_sz = 'MiB' }
+        $jrows = @(
+            @('cold', 'cold'), @('snap', 'cold-snap'), @('wrest', 'warm-restore'), @('rstr', 'restore-cost'),
+            @('wstat', 'warm-stateful'), @('pexec', 'parallel-exec'), @('snap_sz', 'snapshot-size'), @('rss', 'rss'))
+        $json = @()
+        foreach ($r in $jrows) {
+            foreach ($w in $wo) {
+                if (-not $d.ContainsKey("$($r[0]):$w")) { continue }
+                $u = if ($units.ContainsKey($r[0])) { $units[$r[0]] } else { 'ms' }
+                $json += "  {`"name`": `"$($r[1])/$w`", `"unit`": `"$u`", `"value`": $($d["$($r[0]):$w"])}"
+            }
+        }
+        [IO.File]::WriteAllText($jsonFile, "[`n" + ($json -join ",`n") + "`n]`n")
+    }
+    Write-Output ""
+    Write-Output "  JSON: $jsonFile"
+
 # ── Conformance ─────────────────────────────────────────────────
 
 # Build a conformance rootfs (includes upstream test suite).
@@ -597,6 +817,10 @@ build-conformance runtime:
     (cd "$tmpdir" && find . | cpio -o -H newc --quiet > "$output")
     echo "==> Done: $output ($(du -h "$output" | cut -f1))"
 
+[windows]
+build-conformance runtime:
+    @Write-Error "build-conformance needs Docker + cpio on Linux. Build there (just build-conformance {{runtime}}) and copy build-elfloader/{{runtime}}-conformance.cpio here."; exit 1
+
 # Clean rebuild of the conformance rootfs — rebuilds both the base
 # driver image and the conformance image, and invalidates stale snapshots.
 [unix]
@@ -607,6 +831,10 @@ rebuild-conformance runtime:
     just build-conformance "{{runtime}}"
     rm -rf "{{snapshot_dir}}/{{runtime}}-conformance"
     echo "==> Stale conformance snapshot removed"
+
+[windows]
+rebuild-conformance runtime:
+    @Write-Error "rebuild-conformance needs Docker + cpio on Linux. Rebuild there (just rebuild-conformance {{runtime}}) and copy build-elfloader/{{runtime}}-conformance.cpio here."; exit 1
 
 # Run upstream conformance tests for a runtime.
 # Each test module runs in its own guest (snapshot restore) so a crash
@@ -653,6 +881,11 @@ conformance runtime *modules:
         mapfile -t test_modules < <("$hluk" snapshot run "$snap_dir" --net --exec \
             "import os; d='/usr/local/lib/python3.12/test'; [print(f[:-3]) for f in sorted(os.listdir(d)) if f.startswith('test_') and f.endswith('.py')]" \
             2>/dev/null | tr -d '\r' | grep "^test_" || true)
+    fi
+
+    if [ "${#test_modules[@]}" -eq 0 ]; then
+        echo "error: no test modules discovered" >&2
+        exit 1
     fi
 
     # Build skip list from the known-failures manifest
@@ -714,6 +947,97 @@ conformance runtime *modules:
         exit 1
     fi
 
+# Windows port of the recipe above — same discovery, skip list, per-module
+# timeout, RESULT/SUMMARY lines and exit code.  Keep the two in step.
+[windows]
+conformance runtime *modules:
+    #!pwsh
+    $ErrorActionPreference = 'Stop'
+    [Console]::OutputEncoding = [Text.Encoding]::UTF8
+    $hluk = "{{root_dir}}/target/release/hluk.exe"
+    $rootfs = "{{build_dir}}/{{runtime}}-conformance.cpio"
+    $snapDir = "{{snapshot_dir}}/{{runtime}}-conformance"
+    $manifest = "{{conformance_dir}}/{{runtime}}/known_failures.toml"
+    $runner = Get-Content -Raw "{{conformance_dir}}/{{runtime}}/run_tests.py"
+
+    if (-not (Test-Path $rootfs)) { Write-Error "conformance rootfs not found: $rootfs (build it on Linux and copy it here)" }
+    $scratch = just _scratch-mb "{{runtime}}"
+    just build
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    if (-not (Test-Path $snapDir)) {
+        Write-Output "==> Saving conformance snapshot..."
+        New-Item -ItemType Directory -Force (Split-Path $snapDir) | Out-Null
+        & $hluk snapshot save --initrd $rootfs --scratch-mb $scratch --net --output $snapDir
+        if ($LASTEXITCODE -ne 0) { Write-Error "snapshot save failed" }
+    }
+
+    # Modules from the command line, else discovered from the rootfs via the guest.
+    $modulesArg = "{{modules}}".Trim()
+    if ($modulesArg) {
+        $testModules = @($modulesArg -split '\s+')
+    } else {
+        Write-Output "==> Discovering test modules..."
+        $discover = "import os; d='/usr/local/lib/python3.12/test'; [print(f[:-3]) for f in sorted(os.listdir(d)) if f.startswith('test_') and f.endswith('.py')]"
+        $testModules = @(& $hluk snapshot run $snapDir --net --exec $discover 2>$null | ForEach-Object { $_.Trim() } | Where-Object { $_ -like 'test_*' })
+        if ($LASTEXITCODE -ne 0) { Write-Error "module discovery failed (exit $LASTEXITCODE)" }
+    }
+    if ($testModules.Count -eq 0) { Write-Error "no test modules discovered" }
+
+    # Skip list from the known-failures manifest.
+    $skip = @{}
+    if (Test-Path $manifest) {
+        foreach ($m in [regex]::Matches((Get-Content -Raw $manifest), '(?m)^\s+"(test_[^"]+)"')) { $skip[$m.Groups[1].Value] = $true }
+    }
+
+    $pass = 0; $fail = 0; $err = 0; $skipped = 0; $crash = 0; $total = 0
+    Write-Output "==> Running $($testModules.Count) modules ($($skip.Count) in skip list)"
+    Write-Output ""
+
+    foreach ($mod in $testModules) {
+        if ($skip.ContainsKey($mod)) {
+            Write-Output "SKIP $mod"; $skipped++; $total++; continue
+        }
+        # Each module runs in its own guest, killed after 60 s (some spin the hypervisor).
+        $line = "RESULT $mod status=CRASH tests=0 fail=0 error=0 skip=0 time=0"
+        $psi = [System.Diagnostics.ProcessStartInfo]::new($hluk)
+        foreach ($a in @('snapshot', 'run', $snapDir, '--net', '--exec', "MODULE='$mod'`n$runner")) { $psi.ArgumentList.Add($a) }
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $stdout = $p.StandardOutput.ReadToEndAsync()
+        $null = $p.StandardError.ReadToEndAsync()
+        if ($p.WaitForExit(60000)) {
+            $p.WaitForExit()  # flush async readers
+            if ($p.ExitCode -eq 0) {
+                $found = @($stdout.Result -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -like 'RESULT *' })
+                if ($found.Count -gt 0) { $line = $found[-1] }
+            }
+        } else {
+            try { $p.Kill($true) } catch {}
+            $p.WaitForExit()
+        }
+        Write-Output $line
+        switch -Regex ($line) {
+            'status=PASS'  { $pass++ }
+            'status=FAIL'  { $fail++ }
+            'status=ERROR' { $err++ }
+            'status=CRASH' { $crash++ }
+        }
+        $total++
+    }
+
+    Write-Output ""
+    Write-Output "════════════════════════════════════════════"
+    Write-Output "SUMMARY total=$total pass=$pass fail=$fail error=$err skip=$skipped crash=$crash"
+    Write-Output "════════════════════════════════════════════"
+    if ($fail -gt 0 -or $err -gt 0 -or $crash -gt 0) {
+        Write-Output ""
+        [Console]::Error.WriteLine("✗ Conformance suite failed (fail=$fail error=$err crash=$crash)")
+        exit 1
+    }
+
 # ── Clean ────────────────────────────────────────────────────────
 
 # Remove build artifacts
@@ -770,6 +1094,10 @@ build-all-rootfs:
         just build-rootfs agent-custom examples/agent/custom/Dockerfile
     fi
 
+[windows]
+build-all-rootfs:
+    @Write-Error "build-all-rootfs needs Docker + cpio on Linux. Build there (just build-all-rootfs) and copy build-elfloader/ here."; exit 1
+
 # Rebuild all rootfs images from scratch (--no-cache, pulls fresh
 # base images, invalidates snapshots).
 [unix]
@@ -802,3 +1130,7 @@ rebuild-all-rootfs:
         just build-rootfs agent-custom "$df"
         rm -rf "{{snapshot_dir}}/agent-custom"
     fi
+
+[windows]
+rebuild-all-rootfs:
+    @Write-Error "rebuild-all-rootfs needs Docker + cpio on Linux. Rebuild there (just rebuild-all-rootfs) and copy build-elfloader/ here."; exit 1

@@ -16,7 +16,7 @@ just run node examples/node/hello.js
 
 # Snapshots
 just snapshot-save python
-just run-snapshot .snapshots/python examples/python/hello.py
+just snapshot-run .snapshots/python examples/python/hello.py
 
 # See all recipes
 just --list
