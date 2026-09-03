@@ -41,6 +41,7 @@ pub use hyperlight_host::{
 
 use tracing::{debug, info};
 
+mod errno;
 mod hostfs;
 mod hostnet;
 pub mod net_policy;
@@ -65,17 +66,36 @@ pub const INITRD_MAP_BASE: u64 = 0xFEF0_0000;
 /// images (e.g. Node's 100 MiB binary needs ~512 MiB).
 pub const DEFAULT_SCRATCH_MB: usize = 256;
 
+/// Largest payload of one host call, in either direction.
+///
+/// This matches the guest's compile-time ceiling, regardless of what
+/// `GetHostFsChunkSize` says: the guest's host-call encoder
+/// (`g_generic_fc_buf` in `plat/hyperlight/hcall.c`) and its socket
+/// driver's transfer buffers (`lib/hostsock/hostsock.c`) are static
+/// 64 KiB arrays, and hostfs clamps the queried chunk size to a
+/// compile-time `HOSTFS_MAX_CHUNK`.
+///
+/// TODO: let the host be the only place this is decided.  The guest
+/// already caches the host-chosen I/O stack sizes from the PEB in
+/// `hl_hcall_init` (`peb->input_stack.size`, `peb->output_stack.size`,
+/// i.e. [`IO_STACK_SIZE`]); it should size its buffers from those:
+/// keep a small static encoder buffer for the few host calls made
+/// before the allocator exists (`GetCmdLine`, `GetPagingBudget`), then
+/// switch to a PEB-sized heap buffer, and have hostsock/hostfs allocate
+/// their transfer buffers from the same value at init.  That removes
+/// the `65536` literals, `HCALL_SEND_MAX` and the `HOSTFS_MAX_CHUNK`
+/// clamp, and this constant plus `IO_STACK_SIZE` become the single
+/// source of truth, delivered through the PEB.
+pub(crate) const HOST_CALL_MAX: usize = 64 * 1024;
+
 /// PEB I/O stack size for host-call data transfer.
 ///
 /// Both the input stack (host→guest results) and output stack
-/// (guest→host calls) must hold a FlatBuffer-encoded message.  The
-/// guest's generic hcall encoder (`g_generic_fc_buf`) is 64 KiB, so
-/// the I/O stacks must be at least that large.  We add headroom for
-/// the stack header (8 bytes) and alignment padding.
-///
-/// Default Hyperlight stacks are only 16 KiB — too small for large
-/// file or network transfers.
-const IO_STACK_SIZE: usize = 65536 + 4096;
+/// (guest→host calls) must hold a FlatBuffer-encoded message carrying
+/// a [`HOST_CALL_MAX`] payload, plus the stack header (8 bytes) and
+/// alignment padding.  Default Hyperlight stacks are only 16 KiB — too
+/// small for large file or network transfers.
+const IO_STACK_SIZE: usize = HOST_CALL_MAX + 4096;
 
 /// PEB heap size.
 ///
