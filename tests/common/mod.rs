@@ -87,49 +87,19 @@ pub fn hluk_with_stdin_scratch(
 #[allow(dead_code)]
 pub const BIN_MOUNT: &str = "/mnt/bin";
 
-/// Compile a source file into the given output path.
+/// Prebuilt guest binaries for a compiled runtime.
+///
+/// Built from `examples/` by `just build-test-bins` on Linux, the same
+/// way rootfs images are, so tests need no host toolchain.
 #[allow(dead_code)]
-pub fn compile_example(cmd: &str, args: &[&str], out_path: &std::path::Path) {
-    let output = std::process::Command::new(cmd)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("{cmd} failed to start: {e}"));
+pub fn require_bins(runtime: &str) -> PathBuf {
+    let dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("build-elfloader/bins/{runtime}"));
     assert!(
-        output.status.success(),
-        "{cmd} failed: {}",
-        String::from_utf8_lossy(&output.stderr),
+        dir.is_dir(),
+        "build-elfloader/bins/{runtime} not found — run `just build-test-bins` (on Linux) and copy build-elfloader/bins/ here",
     );
-    assert!(
-        out_path.exists(),
-        "compiler didn't produce {}",
-        out_path.display()
-    );
-}
-
-/// Run `dotnet publish` and return true on success. Suppresses build output.
-#[allow(dead_code)]
-pub fn dotnet_publish(proj: &std::path::Path, out_dir: &std::path::Path) -> bool {
-    match std::process::Command::new("dotnet")
-        .args([
-            "publish",
-            "-c",
-            "Release",
-            "-r",
-            "linux-musl-x64",
-            "-v",
-            "q",
-            "--nologo",
-            "-o",
-            out_dir.to_str().unwrap(),
-        ])
-        .current_dir(proj)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-    {
-        Ok(s) => s.success(),
-        Err(_) => false,
-    }
+    dir
 }
 
 /// The host's non-loopback IP.
