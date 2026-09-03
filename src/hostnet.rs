@@ -1009,24 +1009,31 @@ fn linux_events_to_pollflags(linux: i16) -> PollFlags {
 }
 
 /// Translate rustix PollFlags revents back to Linux constants.
+///
+/// Uses `intersects` instead of `contains` because Windows defines
+/// POLLIN = POLLRDNORM | POLLRDBAND (0x0300).  WSAPoll typically
+/// returns only POLLRDNORM (0x0100) for readable data, so a
+/// `contains(POLLIN)` check requires both bits and silently fails.
+/// `intersects` fires when *any* constituent bit is set, matching
+/// Linux behaviour where POLLIN is a single bit (0x0001).
 fn pollflags_to_linux_revents(flags: PollFlags) -> i16 {
     let mut linux: i16 = 0;
-    if flags.contains(PollFlags::IN) {
+    if flags.intersects(PollFlags::IN) {
         linux |= LINUX_POLLIN;
     }
-    if flags.contains(PollFlags::PRI) {
+    if flags.intersects(PollFlags::PRI) {
         linux |= LINUX_POLLPRI;
     }
-    if flags.contains(PollFlags::OUT) {
+    if flags.intersects(PollFlags::OUT) {
         linux |= LINUX_POLLOUT;
     }
-    if flags.contains(PollFlags::ERR) {
+    if flags.intersects(PollFlags::ERR) {
         linux |= LINUX_POLLERR;
     }
-    if flags.contains(PollFlags::HUP) {
+    if flags.intersects(PollFlags::HUP) {
         linux |= LINUX_POLLHUP;
     }
-    if flags.contains(PollFlags::NVAL) {
+    if flags.intersects(PollFlags::NVAL) {
         linux |= LINUX_POLLNVAL;
     }
     linux
