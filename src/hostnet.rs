@@ -376,8 +376,9 @@ fn reg_accept(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
                 }
             };
             // Lock is released — safe to block on accept.
-            #[cfg(windows)]
-            let _ = set_nonblocking(&listener);
+            // The clone stays blocking: the guest's hostsock driver calls
+            // check_ready() before accept, so a connection is pending and
+            // the blocking call completes immediately.
             let (new_sock, peer) = match rnet::acceptfrom(&listener) {
                 Ok(pair) => pair,
                 Err(e) => return Ok(errno_vec(e)),
@@ -530,11 +531,13 @@ fn reg_send(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
                 }
             };
             // Lock is released — safe to block on send.
-            // On Windows, set the clone non-blocking: WSADuplicateSocket
-            // doesn't preserve FIONBIO, so the clone defaults to
-            // blocking which could hang the vCPU.
-            #[cfg(windows)]
-            let _ = set_nonblocking(&sock_clone);
+            //
+            // The guest's hostsock driver calls check_ready() before each
+            // I/O operation, so by the time this host function runs data
+            // is available and the blocking call completes immediately.
+            // Setting the clone to non-blocking (as was done previously)
+            // causes EAGAIN to leak to the guest, breaking TLS handshakes
+            // that don't expect non-blocking semantics.
             Ok(match rnet::send(&sock_clone, &data, SendFlags::empty()) {
                 Ok(n) => n as i32,
                 Err(e) => -errno_to_linux(e),
@@ -581,8 +584,6 @@ fn reg_sendto(
                 }
             };
             // Lock is released — safe to block on sendto.
-            #[cfg(windows)]
-            let _ = set_nonblocking(&sock_clone);
             Ok(
                 match rnet::sendto(&sock_clone, &data, SendFlags::empty(), &sa) {
                     Ok(n) => n as i32,
@@ -627,21 +628,21 @@ fn reg_recvfrom(
             // Lock is released — safe to block on recv.
             //
             // On Windows, recvfrom() can return WSAEINVAL on connected
-            // TCP sockets in some configurations.  Use recv() as the
-            // primary path on Windows — the source address is only
-            // meaningful for UDP, and the guest can use getpeername()
-            // when it needs the peer address.
+            // TCP sockets in some configurations.  Try recvfrom() first
+            // (works for both connected and unconnected sockets); fall
+            // back to recv() only on EINVAL.  Using recv() unconditionally
+            // breaks UDP (sendto/recvfrom on unconnected sockets) because
+            // recv() returns WSAENOTCONN there.
             //
-            // The clone must be non-blocking: WSADuplicateSocket does
-            // NOT preserve the FIONBIO flag, so clones default to
-            // blocking.  A blocking recv on a clone would hang the vCPU
-            // if no data is immediately available.
+            // The clone stays blocking: the guest's hostsock driver calls
+            // check_ready() before each recv, so data is available and the
+            // blocking call completes immediately.  Non-blocking clones
+            // cause EAGAIN to leak to the guest, breaking TLS handshakes.
             #[cfg(windows)]
             let recv_result: Result<
                 (Vec<u8>, usize, Option<std::net::SocketAddr>),
                 Errno,
             > = {
-                let _ = set_nonblocking(&sock_clone);
                 let mut buf = vec![MaybeUninit::uninit(); len];
                 // Try recvfrom() first — it works for both connected and
                 // unconnected sockets (TCP and UDP).  Winsock returns
