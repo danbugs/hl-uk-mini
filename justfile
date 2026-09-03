@@ -692,13 +692,25 @@ conformance runtime *modules:
             2>/dev/null | tr -d '\r' | grep "^test_" || true)
     fi
 
-    # Build skip list from the known-failures manifest
+    # Build skip list from the known-failures manifest(s).
+    # A platform-specific file (e.g. known_failures_windows.toml) is
+    # merged on top so tests that crash only on that OS are skipped
+    # without removing them from the Linux run.
     declare -A SKIP=()
-    if [ -f "$manifest" ]; then
-        while IFS= read -r mod; do
-            SKIP["$mod"]=1
-        done < <(grep -oP '^\s+"(test_[^"]+)"' "$manifest" | sed 's/.*"\(test_[^"]*\)".*/\1/')
-    fi
+    manifests=("$manifest")
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            win="${manifest%.toml}_windows.toml"
+            [ -f "$win" ] && manifests+=("$win")
+            ;;
+    esac
+    for m in "${manifests[@]}"; do
+        if [ -f "$m" ]; then
+            while IFS= read -r mod; do
+                SKIP["$mod"]=1
+            done < <(grep -oP '^\s+"(test_[^"]+)"' "$m" | sed 's/.*"\(test_[^"]*\)".*/\1/')
+        fi
+    done
 
     pass=0 fail=0 error=0 skip=0 crash=0 total=0
 
