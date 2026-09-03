@@ -107,6 +107,35 @@ pub const HEAP_SIZE: u64 = 0x10_0000; // 1 MiB
 /// OCI tag used when saving/loading snapshots to disk.
 pub const SNAPSHOT_TAG: &str = "latest";
 
+// ── Windows surrogate processes ────────────────────────────────────────
+
+/// Choose how many WHP *surrogate processes* Hyperlight may use.
+///
+/// On Windows, Hyperlight maps each VM's memory through a helper
+/// process so that many VMs can share one host process, and by default
+/// pre-spawns 512 of them the first time a sandbox is created.  Pass
+/// `0` to disable them: memory is mapped directly, there is no start-up
+/// cost, and the process may hold **one live sandbox at a time**, which
+/// is right for anything that runs one guest per process (the `hluk`
+/// CLI does this).  Pass `max > 0` to allow that many concurrent
+/// sandboxes, with helpers spawned on demand instead of up front.
+///
+/// Hyperlight reads this only from the environment, once, before the
+/// first sandbox exists, so this sets `HYPERLIGHT_MAX_SURROGATES` and
+/// `HYPERLIGHT_INITIAL_SURROGATES` and must be called before any
+/// sandbox is created; later calls have no effect.  Left alone,
+/// Hyperlight's own default applies.
+#[cfg(windows)]
+pub fn configure_surrogates(max: usize) {
+    // SAFETY: on Windows `set_var` is backed by `SetEnvironmentVariableW`,
+    // which is thread-safe; the unsafety of `set_var` concerns POSIX
+    // `getenv` races, which cannot occur here.
+    unsafe {
+        std::env::set_var("HYPERLIGHT_MAX_SURROGATES", max.to_string());
+        std::env::set_var("HYPERLIGHT_INITIAL_SURROGATES", "0");
+    }
+}
+
 // ── Mount ───────────────────────────────────────────────────────────────
 
 /// A host filesystem mount passed to the guest.

@@ -796,6 +796,14 @@ fn main() -> hyperlight_unikraft::hyperlight_host::Result<()> {
             .init();
     }
 
+    // One guest at a time, so skip Hyperlight's 512 pre-spawned helper
+    // processes on Windows; `bench parallel` needs one per VM.
+    #[cfg(windows)]
+    hyperlight_unikraft::configure_surrogates(match &cli.command {
+        Command::Bench(BenchCommand::Parallel(args)) => args.vms,
+        _ => 0,
+    });
+
     match cli.command {
         Command::Run(args) => cmd_run(args),
         Command::Snapshot(cmd) => match cmd {
