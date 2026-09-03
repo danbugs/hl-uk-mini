@@ -44,10 +44,11 @@ on the hosted runners.
 
 ## Notes
 
-**RSS:** The CLI reports `RssAnon` from `/proc/self/status` (Linux) — anonymous
-(private) memory only. This is the density-relevant metric: it scales linearly
-with VM count and is the closest analog to Windows' `PrivateMemorySize64`. Values may still differ from Windows due to how guest
-memory is backed (anonymous mmap on Linux vs file-backed mapping on Windows).
+**RSS:** The CLI reports `RssAnon` from `/proc/self/status` on Linux and the
+private working set (`GetProcessMemoryInfo`) on Windows — private resident
+memory only. This is the density-relevant metric: it scales linearly with VM
+count. Guest memory is backed differently on the two (anonymous mmap on Linux,
+file mapping on Windows), so values are comparable within an OS, not across.
 
 **Snapshot size:** Reported as total bytes on disk (recursive `stat` of the
 snapshot directory). Same value on all platforms.

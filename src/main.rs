@@ -530,9 +530,12 @@ fn print_snapshot_size(label: &str, snap_dir: &std::path::Path) {
     }
 }
 
-/// Print private (anonymous) RSS as a BENCH line.
+/// Print resident memory as a BENCH line.
 /// This is the density-relevant metric — it scales linearly with VM count.
-/// Closest analog to Windows' PrivateMemorySize64.
+/// Linux reports `RssAnon` (anonymous resident pages).  Windows reports the
+/// working set: guest memory there is a section mapping, which the
+/// private-commit counters do not attribute to the process.  The two are
+/// comparable within an OS, not across them.
 fn print_rss(label: &str) {
     #[cfg(target_os = "linux")]
     if let Ok(status) = std::fs::read_to_string("/proc/self/status")
@@ -544,8 +547,26 @@ fn print_rss(label: &str) {
     {
         println!("BENCH {label} rss_mb={}", kb / 1024);
     }
-    // TODO: Windows — use GetProcessMemoryInfo for PrivateUsage
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::ProcessStatus::{
+            K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+        let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        // SAFETY: `counters` is a valid, writable struct of the size passed
+        // in `cb`.
+        let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &raw mut counters, size) };
+        if ok != 0 {
+            println!(
+                "BENCH {label} rss_mb={}",
+                counters.WorkingSetSize / (1024 * 1024)
+            );
+        }
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     let _ = label;
 }
 
