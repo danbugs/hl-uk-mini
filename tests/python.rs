@@ -49,6 +49,9 @@ fn python_snapshot_round_trip() {
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
+    // Drop the save sandbox before restore — with HYPERLIGHT_MAX_SURROGATES=0
+    // only one WHP VM can exist at a time.
+    drop(sandbox);
 
     // Restore + run
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
@@ -144,6 +147,9 @@ fn python_env_vars_snapshot_restore() {
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
+    // Drop the save sandbox before restore — with HYPERLIGHT_MAX_SURROGATES=0
+    // only one WHP VM can exist at a time.
+    drop(sandbox);
 
     // Restore + set env vars AFTER restore
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();

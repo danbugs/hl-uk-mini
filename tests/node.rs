@@ -47,6 +47,9 @@ fn node_snapshot_round_trip() {
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
+    // Drop the save sandbox before restore — with HYPERLIGHT_MAX_SURROGATES=0
+    // only one WHP VM can exist at a time.
+    drop(sandbox);
 
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
