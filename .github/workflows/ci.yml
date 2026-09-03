@@ -164,16 +164,16 @@ jobs:
 
       - name: cargo test
         env:
-          # Disable WHP surrogate processes on Windows — hluk uses
-          # single-partition mode (WHvMapGpaRange).  Surrogates cause
-          # the test binary to hang on exit because the lazy_static
-          # SurrogateProcessManager is never dropped.
-          HYPERLIGHT_MAX_SURROGATES: ${{ runner.os == 'Windows' && '0' || '' }}
+          # Allow a small pool of WHP surrogate processes on Windows so
+          # snapshot round-trip tests can keep the original VM alive while
+          # restoring.  The library defaults to 0 (single-VM mode) when
+          # unset; tests need at least 2.
+          HYPERLIGHT_MAX_SURROGATES: ${{ runner.os == 'Windows' && '4' || '' }}
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            # Single-partition mode allows only one WHP VM at a time,
-            # so tests must run serially.  --no-fail-fast ensures all
-            # test binaries run even if one has failures.
+            # WHP tests run serially to avoid resource contention.
+            # --no-fail-fast ensures all test binaries run even if one
+            # has failures.
             cargo test --all-targets --locked --no-fail-fast -- --test-threads=1
           else
             cargo test --all-targets --locked
@@ -222,13 +222,9 @@ jobs:
           sudo udevadm trigger --name-match=kvm || true
 
       - name: Build hluk (release)
-        env:
-          HYPERLIGHT_MAX_SURROGATES: ${{ runner.os == 'Windows' && '0' || '' }}
         run: cargo build --release --locked
 
       - name: Run CPython conformance suite
-        env:
-          HYPERLIGHT_MAX_SURROGATES: ${{ runner.os == 'Windows' && '0' || '' }}
         run: |
           just conformance python 2>&1 | tee conformance-output.txt
 
@@ -296,12 +292,10 @@ jobs:
           sudo udevadm trigger --name-match=kvm || true
 
       - name: Run benchmarks
-        env:
-          HYPERLIGHT_MAX_SURROGATES: ${{ runner.os == 'Windows' && '0' || '' }}
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            # Skip parallel bench — single-partition mode (no surrogates)
-            # only allows one WHP VM per process.
+            # Skip parallel bench on Windows — benchmarks run single-VM
+            # workloads that don't need concurrent partitions.
             just bench ${{ matrix.runtime }} cold cold-snap warm-restore warm-stateful 2>&1 | tee bench-output.txt
           else
             just bench ${{ matrix.runtime }} 2>&1 | tee bench-output.txt

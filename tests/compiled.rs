@@ -101,9 +101,6 @@ fn c_snapshot_round_trip() {
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
-    // Drop the save sandbox before restore — with HYPERLIGHT_MAX_SURROGATES=0
-    // only one WHP VM can exist at a time.
-    drop(sandbox);
 
     let mounts_run = vec![Mount::rw(&build_dir, BIN_MOUNT)];
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
@@ -360,9 +357,6 @@ fn rust_snapshot_round_trip() {
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
-    // Drop the save sandbox before restore — with HYPERLIGHT_MAX_SURROGATES=0
-    // only one WHP VM can exist at a time.
-    drop(sandbox);
 
     let mounts_run = vec![Mount::rw(&build_dir, BIN_MOUNT)];
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
@@ -534,9 +528,6 @@ fn go_snapshot_round_trip() {
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
-    // Drop the save sandbox before restore — with HYPERLIGHT_MAX_SURROGATES=0
-    // only one WHP VM can exist at a time.
-    drop(sandbox);
 
     let mounts_run = vec![Mount::rw(&build_dir, BIN_MOUNT)];
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
@@ -670,9 +661,6 @@ fn dotnet_aot_snapshot_round_trip() {
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
-    // Drop the save sandbox before restore — with HYPERLIGHT_MAX_SURROGATES=0
-    // only one WHP VM can exist at a time.
-    drop(sandbox);
 
     let mounts_run = vec![Mount::rw(&build_dir, BIN_MOUNT)];
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();

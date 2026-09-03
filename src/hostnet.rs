@@ -30,10 +30,7 @@ use hyperlight_host::func::Registerable;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fd::OwnedFd;
 use rustix::io::Errno;
-use rustix::net::{
-    AddressFamily, RecvFlags, SendFlags, SocketType,
-    self as rnet, sockopt,
-};
+use rustix::net::{self as rnet, AddressFamily, RecvFlags, SendFlags, SocketType, sockopt};
 
 use crate::net_policy::{self, ListenPorts, NetworkPolicy};
 
@@ -297,10 +294,10 @@ fn reg_accept(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
             };
             let mut buf = Vec::with_capacity(32);
             buf.extend(new_fd.to_le_bytes());
-            if let Some(addr) = peer {
-                if let Ok(sa) = SocketAddr::try_from(addr) {
-                    pack_addr(&mut buf, &sa);
-                }
+            if let Some(addr) = peer
+                && let Ok(sa) = SocketAddr::try_from(addr)
+            {
+                pack_addr(&mut buf, &sa);
             }
             Ok(buf)
         },
@@ -440,13 +437,9 @@ fn reg_recvfrom(
             // Lock is released — safe to block on recv.
             let mut recv_buf = vec![MaybeUninit::uninit(); len];
             match rnet::recvfrom(&sock_clone, &mut recv_buf[..], RecvFlags::empty()) {
-                Ok((_, n, src_addr)) => {
+                Ok(((init_data, _), n, src_addr)) => {
                     let n = n.min(len);
-                    // SAFETY: recvfrom initialised the first `n` bytes.
-                    let data: Vec<u8> = recv_buf[..n]
-                        .iter()
-                        .map(|b| unsafe { b.assume_init() })
-                        .collect();
+                    let data = &init_data[..n];
 
                     // Learn IPs from DNS responses when using AllowList.
                     if let Some(ref pol) = pol
@@ -455,7 +448,7 @@ fn reg_recvfrom(
                         && let Ok(sa) = SocketAddr::try_from(any.clone())
                         && sa.port() == 53
                     {
-                        net_policy::learn_ips_from_dns_response(&data, al);
+                        net_policy::learn_ips_from_dns_response(data, al);
                     }
 
                     let mut buf = Vec::with_capacity(16 + n);
@@ -469,7 +462,7 @@ fn reg_recvfrom(
                     } else {
                         pack_zero_addr(&mut buf);
                     }
-                    buf.extend_from_slice(&data);
+                    buf.extend_from_slice(data);
                     Ok(buf)
                 }
                 Err(e) => Ok(errno_vec(e)),

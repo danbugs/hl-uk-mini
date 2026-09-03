@@ -395,6 +395,45 @@ fn resolve_entry(entry: &Option<String>, initrd: &Option<PathBuf>) -> Option<Str
     None
 }
 
+// ── Surrogate configuration ───────────────────────────────────────────
+
+/// Set the maximum number of WHP surrogate processes (Windows only).
+///
+/// On Windows, each WHP virtual machine requires a surrogate process
+/// for memory mapping.  This function controls how many surrogate
+/// processes are available, which determines how many VMs can exist
+/// concurrently.
+///
+/// **Default**: 0 (single-VM mode — only one VM at a time).
+///
+/// Set to a higher value (e.g. 4) when tests or workloads need
+/// concurrent VMs (e.g. snapshot round-trip tests that keep the
+/// original VM alive while restoring from a snapshot).
+///
+/// Must be called **before** the first sandbox is created — the
+/// hyperlight-host library caches this value on first use.
+///
+/// On Linux (KVM), this setting has no effect.
+pub fn set_max_surrogates(count: usize) {
+    // SAFETY: called before any sandbox creation (and thus before
+    // hyperlight-host reads this env var).  No concurrent readers.
+    unsafe {
+        std::env::set_var("HYPERLIGHT_MAX_SURROGATES", count.to_string());
+    }
+}
+
+/// Apply the default surrogate count (0) if not already set.
+///
+/// Called automatically by [`create_sandbox`] and [`restore`].
+fn apply_default_surrogates() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        if std::env::var("HYPERLIGHT_MAX_SURROGATES").is_err() {
+            set_max_surrogates(0);
+        }
+    });
+}
+
 // ── Public API ─────────────────────────────────────────────────────────
 
 /// Create an uninitialized sandbox with host functions registered.
@@ -410,6 +449,7 @@ pub fn create_sandbox(
     network: Option<NetworkPolicy>,
     listen_ports: Option<ListenPorts>,
 ) -> hyperlight_host::Result<(UninitializedSandbox, GuestConfig)> {
+    apply_default_surrogates();
     let scratch_size = scratch_mb * 1024 * 1024;
     let mut cfg = SandboxConfiguration::default();
     cfg.set_scratch_size(scratch_size);
@@ -570,6 +610,7 @@ pub fn restore(
     network: Option<NetworkPolicy>,
     listen_ports: Option<ListenPorts>,
 ) -> hyperlight_host::Result<(MultiUseSandbox, GuestConfig)> {
+    apply_default_surrogates();
     if mounts.is_empty() {
         debug!(
             "restore: no mounts provided — if the snapshot was saved with mounts, hostfs operations will fail"
