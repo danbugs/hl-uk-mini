@@ -2,6 +2,11 @@
 //!
 //! These compile the example source at test time, mount the build
 //! directory into the guest via hostfs, and dispatch the guest path.
+//!
+//! C/C++/Rust/Go tests compile host-native binaries (ELF on Linux) that
+//! run inside the Unikraft guest. On Windows, host compilers produce PE
+//! binaries which the guest cannot execute, so those tests are ignored.
+//! .NET AOT tests skip gracefully via `dotnet_publish` returning false.
 
 mod common;
 
@@ -16,6 +21,7 @@ use hyperlight_unikraft::{
 // ── C ────────────────────────────────────────────────────────────
 
 #[test]
+#[cfg_attr(not(unix), ignore)]
 fn c_hello() {
     let rootfs = require_rootfs("c");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/c/hello.c");
@@ -49,6 +55,7 @@ fn c_hello() {
 }
 
 #[test]
+#[cfg_attr(not(unix), ignore)]
 fn c_snapshot_round_trip() {
     let rootfs = require_rootfs("c");
     let snap_dir = snapshot_dir("c-snap");
@@ -99,6 +106,7 @@ fn c_snapshot_round_trip() {
 }
 
 #[test]
+#[cfg_attr(not(unix), ignore)]
 fn c_multi_binary_mount() {
     let rootfs = require_rootfs("c");
     let hello_src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/c/hello.c");
@@ -156,6 +164,7 @@ fn c_multi_binary_mount() {
 }
 
 #[test]
+#[cfg_attr(not(unix), ignore)]
 fn cpp_hello() {
     let rootfs = require_rootfs("c");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/c/hello_cpp.cpp");
@@ -189,6 +198,7 @@ fn cpp_hello() {
 }
 
 #[test]
+#[cfg_attr(not(unix), ignore)]
 fn c_env_vars() {
     let rootfs = require_rootfs("c");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/c/env_vars.c");
@@ -238,6 +248,7 @@ fn c_env_vars() {
 // ── Rust ─────────────────────────────────────────────────────────
 
 #[test]
+#[cfg_attr(not(unix), ignore)]
 fn rust_hello() {
     let rootfs = require_rootfs("rust");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/rust/hello.rs");
@@ -273,6 +284,7 @@ fn rust_hello() {
 }
 
 #[test]
+#[cfg_attr(not(unix), ignore)]
 fn rust_snapshot_round_trip() {
     let rootfs = require_rootfs("rust");
     let snap_dir = snapshot_dir("rust-snap");
@@ -325,6 +337,7 @@ fn rust_snapshot_round_trip() {
 }
 
 #[test]
+#[cfg_attr(not(unix), ignore)]
 fn rust_env_vars() {
     let rootfs = require_rootfs("rust");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/rust/env_vars.rs");
@@ -376,6 +389,7 @@ fn rust_env_vars() {
 // ── Go ───────────────────────────────────────────────────────────
 
 #[test]
+#[cfg_attr(not(unix), ignore)]
 fn go_hello() {
     let rootfs = require_rootfs("go");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/go/hello.go");
@@ -409,6 +423,7 @@ fn go_hello() {
 }
 
 #[test]
+#[cfg_attr(not(unix), ignore)]
 fn go_snapshot_round_trip() {
     let rootfs = require_rootfs("go");
     let snap_dir = snapshot_dir("go-snap");
@@ -459,6 +474,7 @@ fn go_snapshot_round_trip() {
 }
 
 #[test]
+#[cfg_attr(not(unix), ignore)]
 fn go_env_vars() {
     let rootfs = require_rootfs("go");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/go/env_vars.go");
