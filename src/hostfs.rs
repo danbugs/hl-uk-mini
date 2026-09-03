@@ -1,5 +1,9 @@
 //! Host filesystem — `fs_*` host functions backed by [`cap_std::fs::Dir`].
 //!
+//! Every mount is a capability: a `Dir` opened once on the host path,
+//! after which guest paths are resolved *beneath* it by cap-std (no
+//! `..` escapes, no absolute symlink targets) on every platform.
+//!
 //! ## Mount indices
 //!
 //! Every host function takes `mount_idx: i32` as its first parameter,
@@ -28,6 +32,8 @@ use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
 use hyperlight_host::func::Registerable;
 use tracing::{debug, trace};
+
+use crate::errno;
 
 /// Maximum bytes per read/write host call.  The guest queries this
 /// value via `GetHostFsChunkSize` at mount time — changing it here
@@ -85,7 +91,7 @@ pub(crate) fn register(
             "fs_stat",
             move |mount_idx: i32, path: String| -> hyperlight_host::Result<Vec<u8>> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok({ -libc::EINVAL }.to_le_bytes().to_vec());
+                    return Ok({ -errno::EINVAL }.to_le_bytes().to_vec());
                 };
                 // Empty path = stat the mount root itself.
                 let meta = if path.is_empty() {
@@ -126,7 +132,7 @@ pub(crate) fn register(
                   len: u64|
                   -> hyperlight_host::Result<Vec<u8>> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok({ -libc::EINVAL }.to_le_bytes().to_vec());
+                    return Ok({ -errno::EINVAL }.to_le_bytes().to_vec());
                 };
                 let len = (len.min(CHUNK as u64) as usize).max(1);
 
@@ -169,10 +175,10 @@ pub(crate) fn register(
                   data: Vec<u8>|
                   -> hyperlight_host::Result<i32> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok(-libc::EINVAL);
+                    return Ok(-errno::EINVAL);
                 };
                 if check_ro(&ro, mount_idx as usize) {
-                    return Ok(-libc::EROFS);
+                    return Ok(-errno::EROFS);
                 }
                 let result = if append != 0 {
                     d.open_with(&path, OpenOptions::new().append(true).create(true))
@@ -202,10 +208,10 @@ pub(crate) fn register(
             "fs_mkdir",
             move |mount_idx: i32, path: String| -> hyperlight_host::Result<i32> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok(-libc::EINVAL);
+                    return Ok(-errno::EINVAL);
                 };
                 if check_ro(&ro, mount_idx as usize) {
-                    return Ok(-libc::EROFS);
+                    return Ok(-errno::EROFS);
                 }
                 Ok(match d.create_dir(&path) {
                     Ok(()) => 0,
@@ -223,10 +229,10 @@ pub(crate) fn register(
             "fs_unlink",
             move |mount_idx: i32, path: String| -> hyperlight_host::Result<i32> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok(-libc::EINVAL);
+                    return Ok(-errno::EINVAL);
                 };
                 if check_ro(&ro, mount_idx as usize) {
-                    return Ok(-libc::EROFS);
+                    return Ok(-errno::EROFS);
                 }
                 // Try file first, then directory.
                 Ok(match d.remove_file(&path) {
@@ -248,10 +254,10 @@ pub(crate) fn register(
             "fs_truncate",
             move |mount_idx: i32, path: String, length: u64| -> hyperlight_host::Result<i32> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok(-libc::EINVAL);
+                    return Ok(-errno::EINVAL);
                 };
                 if check_ro(&ro, mount_idx as usize) {
-                    return Ok(-libc::EROFS);
+                    return Ok(-errno::EROFS);
                 }
                 Ok(match d.open_with(&path, OpenOptions::new().write(true)) {
                     Ok(f) => match f.set_len(length) {
@@ -279,7 +285,7 @@ pub(crate) fn register(
             "fs_list",
             move |mount_idx: i32, path: String| -> hyperlight_host::Result<Vec<u8>> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok({ -libc::EINVAL }.to_le_bytes().to_vec());
+                    return Ok({ -errno::EINVAL }.to_le_bytes().to_vec());
                 };
                 let path = if path.is_empty() {
                     ".".to_string()
@@ -318,10 +324,10 @@ pub(crate) fn register(
             "fs_rename",
             move |mount_idx: i32, from: String, to: String| -> hyperlight_host::Result<i32> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok(-libc::EINVAL);
+                    return Ok(-errno::EINVAL);
                 };
                 if check_ro(&ro, mount_idx as usize) {
-                    return Ok(-libc::EROFS);
+                    return Ok(-errno::EROFS);
                 }
                 Ok(match d.rename(&from, d, &to) {
                     Ok(()) => 0,
@@ -342,10 +348,10 @@ pub(crate) fn register(
                   target_path: String|
                   -> hyperlight_host::Result<i32> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok(-libc::EINVAL);
+                    return Ok(-errno::EINVAL);
                 };
                 if check_ro(&ro, mount_idx as usize) {
-                    return Ok(-libc::EROFS);
+                    return Ok(-errno::EROFS);
                 }
                 #[cfg(unix)]
                 let result = d.symlink(&target_path, &link_path);
@@ -372,7 +378,7 @@ pub(crate) fn register(
             "fs_readlink",
             move |mount_idx: i32, path: String| -> hyperlight_host::Result<Vec<u8>> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok({ -libc::EINVAL }.to_le_bytes().to_vec());
+                    return Ok({ -errno::EINVAL }.to_le_bytes().to_vec());
                 };
                 Ok(match d.read_link(&path) {
                     Ok(target_path) => {
@@ -396,10 +402,10 @@ pub(crate) fn register(
             "fs_link",
             move |mount_idx: i32, src: String, dst: String| -> hyperlight_host::Result<i32> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok(-libc::EINVAL);
+                    return Ok(-errno::EINVAL);
                 };
                 if check_ro(&ro, mount_idx as usize) {
-                    return Ok(-libc::EROFS);
+                    return Ok(-errno::EROFS);
                 }
                 Ok(match d.hard_link(&src, d, &dst) {
                     Ok(()) => 0,
@@ -417,10 +423,10 @@ pub(crate) fn register(
             "fs_chmod",
             move |mount_idx: i32, path: String, mode: u32| -> hyperlight_host::Result<i32> {
                 let Some(d) = dirs.get(mount_idx as usize) else {
-                    return Ok(-libc::EINVAL);
+                    return Ok(-errno::EINVAL);
                 };
                 if check_ro(&ro, mount_idx as usize) {
-                    return Ok(-libc::EROFS);
+                    return Ok(-errno::EROFS);
                 }
                 #[cfg(unix)]
                 {
@@ -483,7 +489,7 @@ fn errno_vec(e: std::io::Error) -> Vec<u8> {
 
 /// Convert an I/O error to `-errno` as i32.
 fn neg_errno(e: std::io::Error) -> i32 {
-    let code = e.raw_os_error().unwrap_or(libc::EIO);
+    let code = errno::from_io(&e);
     trace!(errno = code, err = %e, "hostfs: operation failed");
     -code
 }
