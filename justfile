@@ -716,9 +716,17 @@ conformance runtime *modules:
         # Run this module in its own guest with a timeout.
         # --kill-after=5 ensures a SIGKILL follows if the process
         # ignores SIGTERM (some modules spin the hypervisor at 100% CPU).
+        # WHP (Windows) has higher per-operation overhead than KVM, so
+        # network-heavy modules (codecmaps, urllib*net, telnetlib) need
+        # a longer window to finish.
+        if [[ "$(uname -s)" =~ MINGW|MSYS|CYGWIN|NT ]]; then
+            module_timeout=120
+        else
+            module_timeout=60
+        fi
         inline=$(printf "MODULE='%s'\n%s" "$mod" "$(cat '{{conformance_dir}}/{{runtime}}/run_tests.py')")
 
-        output=$(timeout --kill-after=5 60 "$hluk" snapshot run "$snap_dir" \
+        output=$(timeout --kill-after=5 "$module_timeout" "$hluk" snapshot run "$snap_dir" \
             --net --exec "$inline" 2>/dev/null || echo "RESULT $mod status=CRASH tests=0 fail=0 error=0 skip=0 time=0")
 
         # Extract the RESULT line
