@@ -605,7 +605,7 @@ fn reg_poll(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
 
             #[cfg(not(unix))]
             {
-                let _ = (tbl, pollfds_raw, timeout_ms, nfds);
+                let _ = (&tbl, pollfds_raw, timeout_ms, nfds);
                 Ok(0i32.to_le_bytes().to_vec())
             }
         },
