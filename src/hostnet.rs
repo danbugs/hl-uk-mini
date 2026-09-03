@@ -495,34 +495,62 @@ fn reg_recvfrom(
                 }
             };
             // Lock is released — safe to block on recv.
-            let mut recv_buf = vec![MaybeUninit::uninit(); len];
-            match rnet::recvfrom(&sock_clone, &mut recv_buf[..], RecvFlags::empty()) {
-                Ok(((init_data, _), n, src_addr)) => {
-                    let n = n.min(len);
-                    let data = &init_data[..n];
+            //
+            // On Windows, recvfrom() can return WSAEINVAL on connected
+            // TCP sockets in some configurations.  Use recv() as the
+            // primary path on Windows — the source address is only
+            // meaningful for UDP, and the guest can use getpeername()
+            // when it needs the peer address.
+            #[cfg(windows)]
+            let recv_result: Result<
+                (Vec<u8>, usize, Option<std::net::SocketAddr>),
+                Errno,
+            > = {
+                let mut buf = vec![MaybeUninit::uninit(); len];
+                match rnet::recv(&sock_clone, &mut buf[..], RecvFlags::empty()) {
+                    Ok(((init_data, _), n)) => {
+                        let n = n.min(len);
+                        Ok((init_data[..n].to_vec(), n, None))
+                    }
+                    Err(e) => Err(e),
+                }
+            };
 
+            #[cfg(not(windows))]
+            let recv_result: Result<
+                (Vec<u8>, usize, Option<std::net::SocketAddr>),
+                Errno,
+            > = {
+                let mut buf = vec![MaybeUninit::uninit(); len];
+                match rnet::recvfrom(&sock_clone, &mut buf[..], RecvFlags::empty()) {
+                    Ok(((init_data, _), n, src_addr)) => {
+                        let n = n.min(len);
+                        let sa = src_addr.and_then(|a| SocketAddr::try_from(a).ok());
+                        Ok((init_data[..n].to_vec(), n, sa))
+                    }
+                    Err(e) => Err(e),
+                }
+            };
+
+            match recv_result {
+                Ok((data, n, src_addr)) => {
                     // Learn IPs from DNS responses when using AllowList.
                     if let Some(ref pol) = pol
                         && let NetworkPolicy::AllowList(ref al) = **pol
-                        && let Some(ref any) = src_addr
-                        && let Ok(sa) = SocketAddr::try_from(any.clone())
+                        && let Some(ref sa) = src_addr
                         && sa.port() == 53
                     {
-                        net_policy::learn_ips_from_dns_response(data, al);
+                        net_policy::learn_ips_from_dns_response(&data, al);
                     }
 
                     let mut buf = Vec::with_capacity(16 + n);
                     buf.extend((n as i32).to_le_bytes());
-                    if let Some(any) = src_addr {
-                        if let Ok(sa) = SocketAddr::try_from(any) {
-                            pack_addr(&mut buf, &sa);
-                        } else {
-                            pack_zero_addr(&mut buf);
-                        }
+                    if let Some(sa) = src_addr {
+                        pack_addr(&mut buf, &sa);
                     } else {
                         pack_zero_addr(&mut buf);
                     }
-                    buf.extend_from_slice(data);
+                    buf.extend_from_slice(&data);
                     Ok(buf)
                 }
                 Err(e) => Ok(errno_vec(e)),
