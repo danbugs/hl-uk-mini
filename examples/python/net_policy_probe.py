@@ -36,7 +36,7 @@ except OSError as e:
     elif e.errno == errno.ECONNREFUSED:
         print("TCP_REFUSED")
     else:
-        print(f"TCP_FAIL:{e.errno}")
+        print(f"TCP_FAIL:{e.errno}:{e}")
 
 # ── UDP sendto (exercises reg_sendto) ──
 try:
@@ -48,4 +48,4 @@ except OSError as e:
     if e.errno == errno.EACCES:
         print("UDP_BLOCKED")
     else:
-        print(f"UDP_FAIL:{e.errno}")
+        print(f"UDP_FAIL:{e.errno}:{e}")

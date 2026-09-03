@@ -167,6 +167,7 @@ fn reg_socket(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
     t.register_host_function(
         "net_socket",
         move |family: i32, ty: i32, proto: i32| -> hyperlight_host::Result<i32> {
+            eprintln!("[net_socket] family={family} ty=0x{ty:x} proto={proto}");
             let domain = match family {
                 2 => AddressFamily::INET,
                 10 => AddressFamily::INET6,
@@ -211,11 +212,20 @@ fn reg_socket(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
 
                     let mut tbl = lock(&tbl);
                     match tbl.insert(sock) {
-                        Ok(fd) => Ok(fd),
-                        Err(e) => Ok(-e),
+                        Ok(fd) => {
+                            eprintln!("[net_socket] → fd={fd}");
+                            Ok(fd)
+                        }
+                        Err(e) => {
+                            eprintln!("[net_socket] → table full: -{e}");
+                            Ok(-e)
+                        }
                     }
                 }
-                Err(e) => Ok(-errno_to_linux(e)),
+                Err(e) => {
+                    eprintln!("[net_socket] → creation failed: {e:?}");
+                    Ok(-errno_to_linux(e))
+                }
             }
         },
     )
@@ -332,15 +342,24 @@ fn reg_connect(
     t.register_host_function(
         "net_connect",
         move |fd: i32, family: i32, addr: String, port: i32| -> hyperlight_host::Result<i32> {
+            eprintln!("[net_connect] fd={fd} addr={addr}:{port} family={family}");
             let sa = match parse_addr(family, &addr, port) {
                 Some(a) => a,
-                None => return Ok(-22), // EINVAL
+                None => {
+                    eprintln!("[net_connect] parse_addr failed → EINVAL");
+                    return Ok(-22); // EINVAL
+                }
             };
             // Enforce network policy.
-            if let Some(ref pol) = pol
-                && pol.check(&sa).is_err()
-            {
-                return Ok(-13); // EACCES
+            if let Some(ref pol) = pol {
+                let check = pol.check(&sa);
+                eprintln!("[net_connect] policy={pol:?} check={check:?}");
+                if check.is_err() {
+                    eprintln!("[net_connect] → returning -13 (EACCES)");
+                    return Ok(-13); // EACCES
+                }
+            } else {
+                eprintln!("[net_connect] no policy");
             }
             // Clone the socket so we can drop the lock before blocking.
             let sock_clone = {
@@ -348,13 +367,19 @@ fn reg_connect(
                 match tbl.get(fd) {
                     Some(sock) => match sock.try_clone() {
                         Ok(s) => s,
-                        Err(_) => return Ok(-5), // EIO
+                        Err(e) => {
+                            eprintln!("[net_connect] try_clone failed: {e} → EIO");
+                            return Ok(-5); // EIO
+                        }
                     },
-                    None => return Ok(-9), // EBADF
+                    None => {
+                        eprintln!("[net_connect] fd {fd} not in table → EBADF");
+                        return Ok(-9); // EBADF
+                    }
                 }
             };
             // Lock is released — safe to block on connect.
-            Ok(match rnet::connect(&sock_clone, &sa) {
+            let result = match rnet::connect(&sock_clone, &sa) {
                 Ok(()) => 0,
                 // Non-blocking connect in progress — treat as success.
                 Err(e)
@@ -363,7 +388,9 @@ fn reg_connect(
                     0
                 }
                 Err(e) => -errno_to_linux(e),
-            })
+            };
+            eprintln!("[net_connect] → returning {result}");
+            Ok(result)
         },
     )
 }
@@ -410,15 +437,25 @@ fn reg_sendto(
               addr: String,
               port: i32|
               -> hyperlight_host::Result<i32> {
+            eprintln!(
+                "[net_sendto] fd={fd} addr={addr}:{port} family={family} len={}",
+                data.len()
+            );
             let sa = match parse_addr(family, &addr, port) {
                 Some(a) => a,
-                None => return Ok(-22), // EINVAL
+                None => {
+                    eprintln!("[net_sendto] parse_addr failed → EINVAL");
+                    return Ok(-22); // EINVAL
+                }
             };
             // Enforce network policy.
-            if let Some(ref pol) = pol
-                && pol.check(&sa).is_err()
-            {
-                return Ok(-13); // EACCES
+            if let Some(ref pol) = pol {
+                let check = pol.check(&sa);
+                eprintln!("[net_sendto] policy check={check:?}");
+                if check.is_err() {
+                    eprintln!("[net_sendto] → returning -13 (EACCES)");
+                    return Ok(-13); // EACCES
+                }
             }
             // Clone the socket so we can drop the lock before blocking.
             let sock_clone = {
