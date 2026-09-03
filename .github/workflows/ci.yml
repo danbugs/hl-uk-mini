@@ -84,7 +84,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build-elfloader
-          key: rootfs-all-${{ hashFiles('drivers/**', 'examples/agent/custom/Dockerfile', 'conformance/python/**') }}
+          key: rootfs-all-${{ hashFiles('drivers/**', 'examples/agent/custom/Dockerfile', 'conformance/python/**', 'examples/c/*.c', 'examples/c/*.cpp', 'examples/rust/*.rs', 'examples/go/*.go') }}
 
       - name: Install cpio
         if: steps.rootfs-cache.outputs.cache-hit != 'true'
@@ -110,6 +110,10 @@ jobs:
       - name: Build conformance rootfs
         if: steps.rootfs-cache.outputs.cache-hit != 'true'
         run: just build-conformance python
+
+      - name: Build test binaries
+        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+        run: just build-test-bins
 
       - name: Upload rootfs CPIOs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -159,7 +163,20 @@ jobs:
           sudo udevadm trigger --name-match=kvm || true
 
       - name: cargo test
-        run: cargo test --all-targets --locked
+        env:
+          # Disable WHP surrogate processes on Windows — hluk uses
+          # single-partition mode (WHvMapGpaRange).  Surrogates cause
+          # the test binary to hang on exit because the lazy_static
+          # SurrogateProcessManager is never dropped.
+          HYPERLIGHT_MAX_SURROGATES: ${{ runner.os == 'Windows' && '0' || '' }}
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # Single-partition mode allows only one WHP VM at a time,
+            # so tests must run serially.
+            cargo test --all-targets --locked -- --test-threads=1
+          else
+            cargo test --all-targets --locked
+          fi
 
   # ── Conformance ──────────────────────────────────────────────
   conformance:
@@ -203,7 +220,14 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm || true
 
+      - name: Build hluk (release)
+        env:
+          HYPERLIGHT_MAX_SURROGATES: ${{ runner.os == 'Windows' && '0' || '' }}
+        run: cargo build --release --locked
+
       - name: Run CPython conformance suite
+        env:
+          HYPERLIGHT_MAX_SURROGATES: ${{ runner.os == 'Windows' && '0' || '' }}
         run: |
           just conformance python 2>&1 | tee conformance-output.txt
 
@@ -271,8 +295,16 @@ jobs:
           sudo udevadm trigger --name-match=kvm || true
 
       - name: Run benchmarks
+        env:
+          HYPERLIGHT_MAX_SURROGATES: ${{ runner.os == 'Windows' && '0' || '' }}
         run: |
-          just bench ${{ matrix.runtime }} 2>&1 | tee bench-output.txt
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # Skip parallel bench — single-partition mode (no surrogates)
+            # only allows one WHP VM per process.
+            just bench ${{ matrix.runtime }} cold cold-snap warm-restore warm-stateful 2>&1 | tee bench-output.txt
+          else
+            just bench ${{ matrix.runtime }} 2>&1 | tee bench-output.txt
+          fi
 
       - name: Post results to step summary
         if: always()
