@@ -30,9 +30,6 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Install Rust components
-        run: rustup component add rustfmt clippy
-
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
@@ -65,34 +62,35 @@ jobs:
       - name: Verify kernel builds from source
         run: just verify-kernel
 
-  # ── Test ──────────────────────────────────────────────────────
-  test:
+  # ── Guest images (Linux only, shared by every test job) ──────
+  # Rootfs images, the conformance image and the compiled test binaries
+  # are all Linux build products (Docker + cpio, Linux toolchains).  This
+  # job builds them once into a cache keyed on their inputs, and every
+  # test job on every OS restores that cache.
+  rootfs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    timeout-minutes: 60
+    timeout-minutes: 45
+    outputs:
+      cache-key: ${{ steps.key.outputs.key }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
 
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm || true
+      - name: Cache key
+        id: key
+        run: echo "key=rootfs-${{ hashFiles('drivers/**', 'conformance/python/**', 'examples/agent/custom/Dockerfile', 'examples/c/**', 'examples/rust/**', 'examples/go/**', 'examples/dotnet-aot/**', 'examples/dotnet-aot-envvars/**') }}" >> "$GITHUB_OUTPUT"
 
-      - name: Cache rootfs CPIOs
+      - name: Cache guest images and test binaries
         id: rootfs-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build-elfloader
-          key: rootfs-all-${{ hashFiles('drivers/**', 'examples/agent/custom/Dockerfile') }}
+          key: ${{ steps.key.outputs.key }}
+          # Saved on Linux, restored on Windows too.
+          enableCrossOsArchive: true
 
       - name: Install cpio
         if: steps.rootfs-cache.outputs.cache-hit != 'true'
@@ -111,19 +109,29 @@ jobs:
           go-version: "1.24"
           cache: false
 
-      - name: Build all rootfs images
+      - name: Build rootfs images, conformance image and test binaries
         if: steps.rootfs-cache.outputs.cache-hit != 'true'
-        run: just build-all-rootfs
+        run: |
+          just build-all-rootfs
+          just build-conformance python
+          just build-test-bins
 
-      - name: cargo test
-        run: cargo test --all-targets --locked
-
-  # ── Conformance ──────────────────────────────────────────────
-  conformance:
-    runs-on: ubuntu-latest
+  # ── Test ──────────────────────────────────────────────────────
+  test:
+    name: test (${{ matrix.os }})
+    needs: rootfs
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-latest
+          - os: windows
+            runner: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -133,39 +141,85 @@ jobs:
 
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
 
+      - name: Restore guest images and test binaries
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build-elfloader
+          key: ${{ needs.rootfs.outputs.cache-key }}
+          # Saved on Linux, restored on Windows too.
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+
       - name: Enable KVM
+        if: runner.os == 'Linux'
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm || true
 
-      - name: Cache rootfs CPIOs
-        id: rootfs-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # The Windows code paths only compile here; lint them here too.
+      - name: cargo clippy
+        if: runner.os == 'Windows'
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      # `just test` sets the WHP surrogate pool and thread count on Windows.
+      - name: cargo test
+        run: just test --locked
+
+  # ── Conformance ──────────────────────────────────────────────
+  conformance:
+    name: conformance (${{ matrix.os }})
+    needs: rootfs
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-latest
+          - os: windows
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+
+      - name: Restore guest images and test binaries
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build-elfloader
-          key: rootfs-conformance-${{ hashFiles('drivers/python/**', 'conformance/python/**') }}
+          key: ${{ needs.rootfs.outputs.cache-key }}
+          # Saved on Linux, restored on Windows too.
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
 
-      - name: Install cpio
-        if: steps.rootfs-cache.outputs.cache-hit != 'true'
-        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends cpio
-
-      - name: Build conformance rootfs
-        if: steps.rootfs-cache.outputs.cache-hit != 'true'
+      - name: Enable KVM
+        if: runner.os == 'Linux'
         run: |
-          just build-rootfs python
-          just build-conformance python
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
 
       - name: Run CPython conformance suite
+        shell: bash
         run: |
           just conformance python 2>&1 | tee conformance-output.txt
 
       - name: Post conformance summary
         if: always()
+        shell: bash
         run: |
           if [ -f conformance-output.txt ]; then
-            echo '## CPython Conformance Results' >> "$GITHUB_STEP_SUMMARY"
+            echo '## CPython Conformance Results (${{ matrix.os }})' >> "$GITHUB_STEP_SUMMARY"
             echo '' >> "$GITHUB_STEP_SUMMARY"
             summary=$(grep '^SUMMARY ' conformance-output.txt || echo "no summary")
             echo "**${summary}**" >> "$GITHUB_STEP_SUMMARY"
@@ -182,15 +236,26 @@ jobs:
 
   # ── Benchmarks ───────────────────────────────────────────────
   bench:
-    name: "bench (${{ matrix.runtime }}) — check results ↗"
-    runs-on: ubuntu-latest
+    name: "bench (${{ matrix.os }}, ${{ matrix.runtime }}) — check results ↗"
+    needs: rootfs
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write   # push to gh-pages
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
+        os: [linux, windows]
         runtime: [python, agent-slim, agent]
+        include:
+          - os: linux
+            runner: ubuntu-latest
+          - os: windows
+            runner: windows-latest
+        # agent is the slow one (~20 min on Windows); agent-slim covers the
+        # same paths on PRs, agent's history is kept from pushes to main.
+        exclude:
+          - runtime: ${{ github.event_name == 'pull_request' && 'agent' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -200,42 +265,41 @@ jobs:
 
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
 
+      - name: Restore guest images
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build-elfloader
+          key: ${{ needs.rootfs.outputs.cache-key }}
+          # Saved on Linux, restored on Windows too.
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+
       - name: Enable KVM
+        if: runner.os == 'Linux'
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm || true
 
-      - name: Cache rootfs CPIO
-        id: rootfs-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: build-elfloader/${{ matrix.runtime }}-rootfs.cpio
-          key: rootfs-${{ matrix.runtime }}-${{ hashFiles('drivers/**') }}
-
-      - name: Install cpio
-        if: steps.rootfs-cache.outputs.cache-hit != 'true'
-        run: sudo apt-get update -q && sudo apt-get install -y --no-install-recommends cpio
-
-      - name: Build rootfs
-        if: steps.rootfs-cache.outputs.cache-hit != 'true'
-        run: just build-rootfs ${{ matrix.runtime }}
-
       - name: Run benchmarks
-        run: |
-          just bench ${{ matrix.runtime }} 2>&1 | tee bench-output.txt
+        shell: bash
+        run: just bench ${{ matrix.runtime }}
 
-      - name: Post results to step summary
-        if: always()
+      # The gate: every metric named in benchmarks/limits.json for this
+      # runtime and host OS must stay under its ceiling (ms, or MiB for
+      # snapshot-size).  Metrics not named there are charted but not gated.
+      - name: Check ceilings
+        shell: bash
         run: |
-          echo '## Benchmark Results — ${{ matrix.runtime }}' >> "$GITHUB_STEP_SUMMARY"
-          echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          # Extract the summary table (between the box footer and the JSON line)
-          awk '/^╚.*╝/{f=1;next} f && /JSON:/{exit} f{print}' bench-output.txt >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice::Benchmark results posted to the Summary tab of this workflow run"
+          jq -r -e --arg rt '${{ matrix.runtime }}' --arg os '${{ matrix.os }}' \
+             --slurpfile lim benchmarks/limits.json '
+            ($lim[0][$rt][$os] // {}) as $max
+            | [ .[] | select($max[.name] != null and .value > $max[.name])
+                | "\(.name): \(.value) \(.unit) is over the ceiling of \($max[.name]) \(.unit)" ]
+            | if length == 0 then "all \($max | length) ceilings met"
+              else (.[] | "::error::" + .), ("\(length) ceiling(s) exceeded" | error) end
+          ' bench-results.json
 
       - name: Store benchmark results
         if: always()
@@ -245,18 +309,23 @@ jobs:
           tool: customSmallerIsBetter
           output-file-path: bench-results.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          benchmark-data-dir-path: dev/bench/${{ matrix.runtime }}
+          # One history per host OS; the two are not comparable.
+          benchmark-data-dir-path: dev/bench/${{ matrix.os }}/${{ matrix.runtime }}
           # Push to gh-pages only on main merges (not on PRs)
           auto-push: ${{ github.event_name == 'push' }}
-          # Fail the job if a PR regresses perf by >15%
-          fail-on-alert: ${{ github.event_name == 'pull_request' }}
-          alert-threshold: '115%'
+          # The job summary: one current/previous/ratio table per job,
+          # "previous" being the last result pushed from main.  Ratios only warn: the
+          # hosted runners vary by 10-30% (Linux) to 2x (Windows) between
+          # runs of the same commit.  The gate is "Check ceilings" above.
+          summary-always: true
+          fail-on-alert: false
+          alert-threshold: '200%'
           comment-on-alert: false
 
   # ── Gate ──────────────────────────────────────────────────────
   ci-passed:
     if: always()
-    needs: [lint, typos, kernel-verify, test, conformance, bench]
+    needs: [lint, typos, kernel-verify, rootfs, test, conformance, bench]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
