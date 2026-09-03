@@ -503,6 +503,16 @@ fn python_http_server_client() {
 
 #[test]
 fn python_http_get() {
+    // This test makes an outbound HTTP request to httpbin.org.
+    // WHP guests lack outbound networking (hostsock provides only
+    // inbound listen ports), so this hangs indefinitely on Windows.
+    if cfg!(windows) {
+        eprintln!(
+            "SKIP: python_http_get requires outbound guest networking (not available on WHP)"
+        );
+        return;
+    }
+
     let rootfs = require_rootfs("python");
     let (usandbox, cfg) = create_sandbox(
         &Some(rootfs),
