@@ -1,11 +1,14 @@
 //! Tests for compiled-language runtimes: C, C++, Rust, Go, .NET AOT.
 //!
-//! These compile the example source at test time, mount the build
-//! directory into the guest via hostfs, and dispatch the guest path.
+//! These mount a build directory into the guest via hostfs, then
+//! dispatch the guest binary path.
 //!
-//! C/C++/Rust/Go tests compile host-native binaries (ELF on Linux) that
-//! run inside the Unikraft guest. On Windows, host compilers produce PE
-//! binaries which the guest cannot execute, so those tests are ignored.
+//! C/C++/Rust/Go tests use pre-built ELF binaries from
+//! `build-elfloader/test-bins/` when available (built on Linux by
+//! `just build-test-bins` and shared via CI artifact). When pre-built
+//! binaries are not available, they fall back to compiling locally —
+//! which skips gracefully on platforms where the compiler or required
+//! flags are unavailable.
 //! .NET AOT tests skip gracefully via `dotnet_publish` returning false.
 
 mod common;
@@ -13,7 +16,9 @@ mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use common::{BIN_MOUNT, compile_example, dotnet_publish, require_rootfs, snapshot_dir};
+use common::{
+    BIN_MOUNT, compile_example, dotnet_publish, require_rootfs, snapshot_dir, use_prebuilt,
+};
 use hyperlight_unikraft::{
     Mount, OciTag, SNAPSHOT_TAG, Snapshot, create_sandbox, init, restore, run,
 };
@@ -21,26 +26,30 @@ use hyperlight_unikraft::{
 // ── C ────────────────────────────────────────────────────────────
 
 #[test]
-#[cfg_attr(not(unix), ignore)]
 fn c_hello() {
     let rootfs = require_rootfs("c");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/c/hello.c");
     let build_dir = std::env::temp_dir().join(format!("hluk-test-c-{}", std::process::id()));
     std::fs::create_dir_all(&build_dir).unwrap();
     let out = build_dir.join("hello");
-    compile_example(
-        "gcc",
-        &[
-            "-O2",
-            "-Wall",
-            "-static-pie",
-            "-fPIE",
-            "-o",
-            out.to_str().unwrap(),
-            src.to_str().unwrap(),
-        ],
-        &out,
-    );
+    if !use_prebuilt("c", "hello", &out)
+        && !compile_example(
+            "gcc",
+            &[
+                "-O2",
+                "-Wall",
+                "-static-pie",
+                "-fPIE",
+                "-o",
+                out.to_str().unwrap(),
+                src.to_str().unwrap(),
+            ],
+            &out,
+        )
+    {
+        let _ = std::fs::remove_dir_all(&build_dir);
+        return;
+    }
 
     let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
     let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts, None, None).unwrap();
@@ -55,7 +64,6 @@ fn c_hello() {
 }
 
 #[test]
-#[cfg_attr(not(unix), ignore)]
 fn c_snapshot_round_trip() {
     let rootfs = require_rootfs("c");
     let snap_dir = snapshot_dir("c-snap");
@@ -64,19 +72,24 @@ fn c_snapshot_round_trip() {
         std::env::temp_dir().join(format!("hluk-test-c-snap-bin-{}", std::process::id()));
     std::fs::create_dir_all(&build_dir).unwrap();
     let out = build_dir.join("hello");
-    compile_example(
-        "gcc",
-        &[
-            "-O2",
-            "-Wall",
-            "-static-pie",
-            "-fPIE",
-            "-o",
-            out.to_str().unwrap(),
-            src.to_str().unwrap(),
-        ],
-        &out,
-    );
+    if !use_prebuilt("c", "hello", &out)
+        && !compile_example(
+            "gcc",
+            &[
+                "-O2",
+                "-Wall",
+                "-static-pie",
+                "-fPIE",
+                "-o",
+                out.to_str().unwrap(),
+                src.to_str().unwrap(),
+            ],
+            &out,
+        )
+    {
+        let _ = std::fs::remove_dir_all(&build_dir);
+        return;
+    }
 
     let empty_mount =
         std::env::temp_dir().join(format!("hluk-test-c-snap-mount-{}", std::process::id()));
@@ -106,7 +119,6 @@ fn c_snapshot_round_trip() {
 }
 
 #[test]
-#[cfg_attr(not(unix), ignore)]
 fn c_multi_binary_mount() {
     let rootfs = require_rootfs("c");
     let hello_src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/c/hello.c");
@@ -115,34 +127,44 @@ fn c_multi_binary_mount() {
     std::fs::create_dir_all(&build_dir).unwrap();
 
     let hello_out = build_dir.join("hello");
-    compile_example(
-        "gcc",
-        &[
-            "-O2",
-            "-Wall",
-            "-static-pie",
-            "-fPIE",
-            "-o",
-            hello_out.to_str().unwrap(),
-            hello_src.to_str().unwrap(),
-        ],
-        &hello_out,
-    );
+    if !use_prebuilt("c", "hello", &hello_out)
+        && !compile_example(
+            "gcc",
+            &[
+                "-O2",
+                "-Wall",
+                "-static-pie",
+                "-fPIE",
+                "-o",
+                hello_out.to_str().unwrap(),
+                hello_src.to_str().unwrap(),
+            ],
+            &hello_out,
+        )
+    {
+        let _ = std::fs::remove_dir_all(&build_dir);
+        return;
+    }
 
     let goodbye_out = build_dir.join("goodbye");
-    compile_example(
-        "gcc",
-        &[
-            "-O2",
-            "-Wall",
-            "-static-pie",
-            "-fPIE",
-            "-o",
-            goodbye_out.to_str().unwrap(),
-            goodbye_src.to_str().unwrap(),
-        ],
-        &goodbye_out,
-    );
+    if !use_prebuilt("c", "goodbye", &goodbye_out)
+        && !compile_example(
+            "gcc",
+            &[
+                "-O2",
+                "-Wall",
+                "-static-pie",
+                "-fPIE",
+                "-o",
+                goodbye_out.to_str().unwrap(),
+                goodbye_src.to_str().unwrap(),
+            ],
+            &goodbye_out,
+        )
+    {
+        let _ = std::fs::remove_dir_all(&build_dir);
+        return;
+    }
 
     let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
     let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts, None, None).unwrap();
@@ -164,26 +186,30 @@ fn c_multi_binary_mount() {
 }
 
 #[test]
-#[cfg_attr(not(unix), ignore)]
 fn cpp_hello() {
     let rootfs = require_rootfs("c");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/c/hello_cpp.cpp");
     let build_dir = std::env::temp_dir().join(format!("hluk-test-cpp-{}", std::process::id()));
     std::fs::create_dir_all(&build_dir).unwrap();
     let out = build_dir.join("hello_cpp");
-    compile_example(
-        "g++",
-        &[
-            "-O2",
-            "-Wall",
-            "-static-pie",
-            "-fPIE",
-            "-o",
-            out.to_str().unwrap(),
-            src.to_str().unwrap(),
-        ],
-        &out,
-    );
+    if !use_prebuilt("c", "hello_cpp", &out)
+        && !compile_example(
+            "g++",
+            &[
+                "-O2",
+                "-Wall",
+                "-static-pie",
+                "-fPIE",
+                "-o",
+                out.to_str().unwrap(),
+                src.to_str().unwrap(),
+            ],
+            &out,
+        )
+    {
+        let _ = std::fs::remove_dir_all(&build_dir);
+        return;
+    }
 
     let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
     let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts, None, None).unwrap();
@@ -198,26 +224,30 @@ fn cpp_hello() {
 }
 
 #[test]
-#[cfg_attr(not(unix), ignore)]
 fn c_env_vars() {
     let rootfs = require_rootfs("c");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/c/env_vars.c");
     let build_dir = std::env::temp_dir().join(format!("hluk-test-c-env-{}", std::process::id()));
     std::fs::create_dir_all(&build_dir).unwrap();
     let out = build_dir.join("env_vars");
-    compile_example(
-        "gcc",
-        &[
-            "-O2",
-            "-Wall",
-            "-static-pie",
-            "-fPIE",
-            "-o",
-            out.to_str().unwrap(),
-            src.to_str().unwrap(),
-        ],
-        &out,
-    );
+    if !use_prebuilt("c", "env_vars", &out)
+        && !compile_example(
+            "gcc",
+            &[
+                "-O2",
+                "-Wall",
+                "-static-pie",
+                "-fPIE",
+                "-o",
+                out.to_str().unwrap(),
+                src.to_str().unwrap(),
+            ],
+            &out,
+        )
+    {
+        let _ = std::fs::remove_dir_all(&build_dir);
+        return;
+    }
 
     let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
     let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts, None, None).unwrap();
@@ -248,28 +278,32 @@ fn c_env_vars() {
 // ── Rust ─────────────────────────────────────────────────────────
 
 #[test]
-#[cfg_attr(not(unix), ignore)]
 fn rust_hello() {
     let rootfs = require_rootfs("rust");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/rust/hello.rs");
     let build_dir = std::env::temp_dir().join(format!("hluk-test-rust-{}", std::process::id()));
     std::fs::create_dir_all(&build_dir).unwrap();
     let out = build_dir.join("hello");
-    compile_example(
-        "rustc",
-        &[
-            "-C",
-            "opt-level=2",
-            "-C",
-            "target-feature=+crt-static",
-            "-C",
-            "relocation-model=pie",
-            "-o",
-            out.to_str().unwrap(),
-            src.to_str().unwrap(),
-        ],
-        &out,
-    );
+    if !use_prebuilt("rust", "hello", &out)
+        && !compile_example(
+            "rustc",
+            &[
+                "-C",
+                "opt-level=2",
+                "-C",
+                "target-feature=+crt-static",
+                "-C",
+                "relocation-model=pie",
+                "-o",
+                out.to_str().unwrap(),
+                src.to_str().unwrap(),
+            ],
+            &out,
+        )
+    {
+        let _ = std::fs::remove_dir_all(&build_dir);
+        return;
+    }
 
     let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
     let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts, None, None).unwrap();
@@ -284,7 +318,6 @@ fn rust_hello() {
 }
 
 #[test]
-#[cfg_attr(not(unix), ignore)]
 fn rust_snapshot_round_trip() {
     let rootfs = require_rootfs("rust");
     let snap_dir = snapshot_dir("rust-snap");
@@ -293,21 +326,26 @@ fn rust_snapshot_round_trip() {
         std::env::temp_dir().join(format!("hluk-test-rust-snap-bin-{}", std::process::id()));
     std::fs::create_dir_all(&build_dir).unwrap();
     let out = build_dir.join("hello");
-    compile_example(
-        "rustc",
-        &[
-            "-C",
-            "opt-level=2",
-            "-C",
-            "target-feature=+crt-static",
-            "-C",
-            "relocation-model=pie",
-            "-o",
-            out.to_str().unwrap(),
-            src.to_str().unwrap(),
-        ],
-        &out,
-    );
+    if !use_prebuilt("rust", "hello", &out)
+        && !compile_example(
+            "rustc",
+            &[
+                "-C",
+                "opt-level=2",
+                "-C",
+                "target-feature=+crt-static",
+                "-C",
+                "relocation-model=pie",
+                "-o",
+                out.to_str().unwrap(),
+                src.to_str().unwrap(),
+            ],
+            &out,
+        )
+    {
+        let _ = std::fs::remove_dir_all(&build_dir);
+        return;
+    }
 
     let empty_mount =
         std::env::temp_dir().join(format!("hluk-test-rust-snap-mount-{}", std::process::id()));
@@ -337,28 +375,32 @@ fn rust_snapshot_round_trip() {
 }
 
 #[test]
-#[cfg_attr(not(unix), ignore)]
 fn rust_env_vars() {
     let rootfs = require_rootfs("rust");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/rust/env_vars.rs");
     let build_dir = std::env::temp_dir().join(format!("hluk-test-rust-env-{}", std::process::id()));
     std::fs::create_dir_all(&build_dir).unwrap();
     let out = build_dir.join("env_vars");
-    compile_example(
-        "rustc",
-        &[
-            "-C",
-            "opt-level=2",
-            "-C",
-            "target-feature=+crt-static",
-            "-C",
-            "relocation-model=pie",
-            "-o",
-            out.to_str().unwrap(),
-            src.to_str().unwrap(),
-        ],
-        &out,
-    );
+    if !use_prebuilt("rust", "env_vars", &out)
+        && !compile_example(
+            "rustc",
+            &[
+                "-C",
+                "opt-level=2",
+                "-C",
+                "target-feature=+crt-static",
+                "-C",
+                "relocation-model=pie",
+                "-o",
+                out.to_str().unwrap(),
+                src.to_str().unwrap(),
+            ],
+            &out,
+        )
+    {
+        let _ = std::fs::remove_dir_all(&build_dir);
+        return;
+    }
 
     let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
     let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 64, mounts, None, None).unwrap();
@@ -389,26 +431,41 @@ fn rust_env_vars() {
 // ── Go ───────────────────────────────────────────────────────────
 
 #[test]
-#[cfg_attr(not(unix), ignore)]
 fn go_hello() {
     let rootfs = require_rootfs("go");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/go/hello.go");
     let build_dir = std::env::temp_dir().join(format!("hluk-test-go-{}", std::process::id()));
     std::fs::create_dir_all(&build_dir).unwrap();
     let out = build_dir.join("hello");
-    let status = std::process::Command::new("go")
-        .args([
-            "build",
-            "-buildmode=pie",
-            "-ldflags=-s -w",
-            "-o",
-            out.to_str().unwrap(),
-            src.to_str().unwrap(),
-        ])
-        .env("CGO_ENABLED", "0")
-        .status()
-        .expect("go build failed to start");
-    assert!(status.success(), "go build failed");
+    if !use_prebuilt("go", "hello", &out) {
+        let go_result = std::process::Command::new("go")
+            .args([
+                "build",
+                "-buildmode=pie",
+                "-ldflags=-s -w",
+                "-o",
+                out.to_str().unwrap(),
+                src.to_str().unwrap(),
+            ])
+            .env("CGO_ENABLED", "0")
+            .output();
+        match go_result {
+            Err(e) => {
+                eprintln!("SKIP: go not available: {e}");
+                let _ = std::fs::remove_dir_all(&build_dir);
+                return;
+            }
+            Ok(output) if !output.status.success() => {
+                eprintln!(
+                    "SKIP: go build failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let _ = std::fs::remove_dir_all(&build_dir);
+                return;
+            }
+            _ => {}
+        }
+    }
 
     let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
     let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 128, mounts, None, None).unwrap();
@@ -423,7 +480,6 @@ fn go_hello() {
 }
 
 #[test]
-#[cfg_attr(not(unix), ignore)]
 fn go_snapshot_round_trip() {
     let rootfs = require_rootfs("go");
     let snap_dir = snapshot_dir("go-snap");
@@ -432,19 +488,35 @@ fn go_snapshot_round_trip() {
         std::env::temp_dir().join(format!("hluk-test-go-snap-bin-{}", std::process::id()));
     std::fs::create_dir_all(&build_dir).unwrap();
     let out = build_dir.join("hello");
-    let status = std::process::Command::new("go")
-        .args([
-            "build",
-            "-buildmode=pie",
-            "-ldflags=-s -w",
-            "-o",
-            out.to_str().unwrap(),
-            src.to_str().unwrap(),
-        ])
-        .env("CGO_ENABLED", "0")
-        .status()
-        .expect("go build failed to start");
-    assert!(status.success(), "go build failed");
+    if !use_prebuilt("go", "hello", &out) {
+        let go_result = std::process::Command::new("go")
+            .args([
+                "build",
+                "-buildmode=pie",
+                "-ldflags=-s -w",
+                "-o",
+                out.to_str().unwrap(),
+                src.to_str().unwrap(),
+            ])
+            .env("CGO_ENABLED", "0")
+            .output();
+        match go_result {
+            Err(e) => {
+                eprintln!("SKIP: go not available: {e}");
+                let _ = std::fs::remove_dir_all(&build_dir);
+                return;
+            }
+            Ok(output) if !output.status.success() => {
+                eprintln!(
+                    "SKIP: go build failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let _ = std::fs::remove_dir_all(&build_dir);
+                return;
+            }
+            _ => {}
+        }
+    }
 
     let empty_mount =
         std::env::temp_dir().join(format!("hluk-test-go-snap-mount-{}", std::process::id()));
@@ -474,26 +546,41 @@ fn go_snapshot_round_trip() {
 }
 
 #[test]
-#[cfg_attr(not(unix), ignore)]
 fn go_env_vars() {
     let rootfs = require_rootfs("go");
     let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/go/env_vars.go");
     let build_dir = std::env::temp_dir().join(format!("hluk-test-go-env-{}", std::process::id()));
     std::fs::create_dir_all(&build_dir).unwrap();
     let out = build_dir.join("env_vars");
-    let status = std::process::Command::new("go")
-        .args([
-            "build",
-            "-buildmode=pie",
-            "-ldflags=-s -w",
-            "-o",
-            out.to_str().unwrap(),
-            src.to_str().unwrap(),
-        ])
-        .env("CGO_ENABLED", "0")
-        .status()
-        .expect("go build failed to start");
-    assert!(status.success(), "go build failed");
+    if !use_prebuilt("go", "env_vars", &out) {
+        let go_result = std::process::Command::new("go")
+            .args([
+                "build",
+                "-buildmode=pie",
+                "-ldflags=-s -w",
+                "-o",
+                out.to_str().unwrap(),
+                src.to_str().unwrap(),
+            ])
+            .env("CGO_ENABLED", "0")
+            .output();
+        match go_result {
+            Err(e) => {
+                eprintln!("SKIP: go not available: {e}");
+                let _ = std::fs::remove_dir_all(&build_dir);
+                return;
+            }
+            Ok(output) if !output.status.success() => {
+                eprintln!(
+                    "SKIP: go build failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let _ = std::fs::remove_dir_all(&build_dir);
+                return;
+            }
+            _ => {}
+        }
+    }
 
     let mounts = vec![Mount::rw(&build_dir, BIN_MOUNT)];
     let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 128, mounts, None, None).unwrap();

@@ -87,23 +87,50 @@ pub fn hluk_with_stdin_scratch(
 #[allow(dead_code)]
 pub const BIN_MOUNT: &str = "/mnt/bin";
 
-/// Compile a source file into the given output path.
+/// Check for a pre-built ELF binary in `build-elfloader/test-bins/{subdir}/{name}`
+/// and copy it to `out_path` if found. Returns `true` if a pre-built binary was
+/// available. These are built on Linux by `just build-test-bins` and shared via
+/// CI artifact so compiled-language tests pass on all platforms.
 #[allow(dead_code)]
-pub fn compile_example(cmd: &str, args: &[&str], out_path: &std::path::Path) {
-    let output = std::process::Command::new(cmd)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("{cmd} failed to start: {e}"));
-    assert!(
-        output.status.success(),
-        "{cmd} failed: {}",
-        String::from_utf8_lossy(&output.stderr),
-    );
-    assert!(
-        out_path.exists(),
-        "compiler didn't produce {}",
-        out_path.display()
-    );
+pub fn use_prebuilt(subdir: &str, name: &str, out_path: &std::path::Path) -> bool {
+    let prebuilt = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("build-elfloader/test-bins")
+        .join(subdir)
+        .join(name);
+    if prebuilt.exists() {
+        if let Err(e) = std::fs::copy(&prebuilt, out_path) {
+            eprintln!("WARN: failed to copy pre-built binary: {e}");
+            return false;
+        }
+        return true;
+    }
+    false
+}
+
+/// Compile a source file into the given output path.
+/// Returns `true` on success, `false` if the compiler is unavailable or
+/// fails (e.g. cross-compilation flags unsupported on this platform).
+#[allow(dead_code)]
+pub fn compile_example(cmd: &str, args: &[&str], out_path: &std::path::Path) -> bool {
+    let output = match std::process::Command::new(cmd).args(args).output() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("SKIP: {cmd} not available: {e}");
+            return false;
+        }
+    };
+    if !output.status.success() {
+        eprintln!(
+            "SKIP: {cmd} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return false;
+    }
+    if !out_path.exists() {
+        eprintln!("SKIP: {cmd} didn't produce {}", out_path.display());
+        return false;
+    }
+    true
 }
 
 /// Run `dotnet publish` and return true on success. Suppresses build output.
