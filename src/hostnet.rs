@@ -17,7 +17,7 @@
 //! All socket operations go through `rustix`, which internally dispatches
 //! to the correct platform syscall (Linux `poll`/`setsockopt`/… vs Winsock
 //! `WSAPoll`/`setsockopt`/…).  The only remaining platform-specific code
-//! is [`neg_errno`], which maps `rustix::io::Errno` to Linux errno values
+//! is [`errno_to_linux`], which maps `rustix::io::Errno` to Linux errno values
 //! for the guest (a Linux unikernel).
 
 use std::collections::HashMap;
@@ -52,6 +52,7 @@ const MAX_SOCKETS: usize = 1024;
 fn errno_to_linux(e: Errno) -> i32 {
     match e {
         Errno::INTR => 4,
+        #[cfg(not(windows))]
         Errno::IO => 5,
         Errno::BADF => 9,
         Errno::AGAIN => 11,
@@ -654,7 +655,11 @@ fn reg_poll(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
             } else {
                 Some(Timespec {
                     tv_sec: (timeout_ms / 1000) as _,
-                    tv_nsec: ((timeout_ms % 1000) as i64) * 1_000_000,
+                    tv_nsec: {
+                        // Nsecs is i64 on Linux, c_long (i32) on Windows.
+                        let ms_frac = (timeout_ms % 1000) as i64;
+                        (ms_frac * 1_000_000) as _
+                    },
                 })
             };
 
