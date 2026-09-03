@@ -588,10 +588,28 @@ fn reg_recvfrom(
             > = {
                 let _ = set_nonblocking(&sock_clone);
                 let mut buf = vec![MaybeUninit::uninit(); len];
-                match rnet::recv(&sock_clone, &mut buf[..], RecvFlags::empty()) {
-                    Ok(((init_data, _), n)) => {
+                // Try recvfrom() first — it works for both connected and
+                // unconnected sockets (TCP and UDP).  Winsock returns
+                // WSAEINVAL on some connected TCP sockets; fall back to
+                // recv() only in that case.  Using recv() unconditionally
+                // breaks UDP (sendto/recvfrom on unconnected sockets)
+                // because recv() returns WSAENOTCONN there.
+                match rnet::recvfrom(&sock_clone, &mut buf[..], RecvFlags::empty()) {
+                    Ok(((init_data, _), n, src_addr)) => {
                         let n = n.min(len);
-                        Ok((init_data[..n].to_vec(), n, None))
+                        let sa = src_addr.and_then(|a| SocketAddr::try_from(a).ok());
+                        Ok((init_data[..n].to_vec(), n, sa))
+                    }
+                    Err(e) if e == Errno::INVAL => {
+                        // WSAEINVAL on connected TCP socket — retry with recv().
+                        let mut buf2 = vec![MaybeUninit::uninit(); len];
+                        match rnet::recv(&sock_clone, &mut buf2[..], RecvFlags::empty()) {
+                            Ok(((init_data, _), n)) => {
+                                let n = n.min(len);
+                                Ok((init_data[..n].to_vec(), n, None))
+                            }
+                            Err(e) => Err(e),
+                        }
                     }
                     Err(e) => Err(e),
                 }
