@@ -186,18 +186,34 @@ fn poll_revents_to_linux(win: i16) -> i16 {
 ///
 /// The guest sends Linux constants; Winsock uses different values for
 /// `SOL_SOCKET` options.  `IPPROTO_TCP` options are the same on both.
+///
+/// For unrecognised `SOL_SOCKET` options the level is still translated
+/// to `0xFFFF` — leaving it as `1` (Linux `SOL_SOCKET`) is an invalid
+/// protocol level on Windows and causes `WSAEINVAL`.
 #[cfg(windows)]
 fn translate_sockopt(level: i32, optname: i32) -> (i32, i32) {
     const LINUX_SOL_SOCKET: i32 = 1;
     const WIN_SOL_SOCKET: i32 = 0xFFFF_i32;
     match (level, optname) {
+        (LINUX_SOL_SOCKET, 1) => (WIN_SOL_SOCKET, 1), // SO_DEBUG
         (LINUX_SOL_SOCKET, 2) => (WIN_SOL_SOCKET, 4), // SO_REUSEADDR
+        (LINUX_SOL_SOCKET, 3) => (WIN_SOL_SOCKET, 0x1008), // SO_TYPE
         (LINUX_SOL_SOCKET, 4) => (WIN_SOL_SOCKET, 0x1007), // SO_ERROR
+        (LINUX_SOL_SOCKET, 5) => (WIN_SOL_SOCKET, 0x0010), // SO_DONTROUTE
+        (LINUX_SOL_SOCKET, 6) => (WIN_SOL_SOCKET, 0x0020), // SO_BROADCAST
         (LINUX_SOL_SOCKET, 7) => (WIN_SOL_SOCKET, 0x1001), // SO_SNDBUF
         (LINUX_SOL_SOCKET, 8) => (WIN_SOL_SOCKET, 0x1002), // SO_RCVBUF
         (LINUX_SOL_SOCKET, 9) => (WIN_SOL_SOCKET, 8), // SO_KEEPALIVE
-        (LINUX_SOL_SOCKET, 15) => (WIN_SOL_SOCKET, 0x1005), // SO_REUSEPORT -> SO_REUSEADDR
-        _ => (level, optname),                        // IPPROTO_TCP and others match
+        (LINUX_SOL_SOCKET, 10) => (WIN_SOL_SOCKET, 0x0100), // SO_OOBINLINE
+        (LINUX_SOL_SOCKET, 13) => (WIN_SOL_SOCKET, 0x0080), // SO_LINGER
+        (LINUX_SOL_SOCKET, 15) => (WIN_SOL_SOCKET, 4), // SO_REUSEPORT -> SO_REUSEADDR
+        (LINUX_SOL_SOCKET, 20) => (WIN_SOL_SOCKET, 0x1006), // SO_RCVTIMEO
+        (LINUX_SOL_SOCKET, 21) => (WIN_SOL_SOCKET, 0x1005), // SO_SNDTIMEO
+        // Unrecognised SOL_SOCKET option — still translate the level.
+        (LINUX_SOL_SOCKET, _) => (WIN_SOL_SOCKET, optname),
+        // IPPROTO_TCP, IPPROTO_IPV6, etc. share the same level/optname
+        // numbering on both platforms.
+        _ => (level, optname),
     }
 }
 
@@ -263,6 +279,17 @@ fn reg_socket(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
 
             match Socket::new(domain, sock_type, protocol) {
                 Ok(sock) => {
+                    // Windows TCP buffers default to 8 KB send / 64 KB recv.
+                    // The guest uses cooperative threading, so a blocking
+                    // send() pauses the entire VM — if the combined buffer
+                    // space is smaller than the payload, the receiver thread
+                    // never runs and the send deadlocks.  256 KB per buffer
+                    // matches Linux auto-tuning defaults and avoids this.
+                    #[cfg(windows)]
+                    {
+                        let _ = sock.set_send_buffer_size(256 * 1024);
+                        let _ = sock.set_recv_buffer_size(256 * 1024);
+                    }
                     let mut tbl = lock(&tbl);
                     match tbl.insert(sock) {
                         Ok(fd) => Ok(fd),
