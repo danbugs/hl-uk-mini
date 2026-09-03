@@ -356,6 +356,42 @@ example-powershell: (run "powershell" (examples_dir / "powershell" / "hello.ps1"
 # on the host first.  See examples/<runtime>/README.md for instructions,
 # then: just run <runtime> ./hello
 
+# ── Test binaries ────────────────────────────────────────────────
+
+# Pre-build ELF test binaries for cross-platform CI.
+# Compiled-language tests (C/C++/Rust/Go) need ELF binaries for the
+# Unikraft guest. This builds them on Linux so Windows CI can use the
+# same binaries via artifact sharing (they land in build-elfloader/
+# alongside the rootfs CPIOs).
+[unix]
+build-test-bins:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="{{build_dir}}/test-bins"
+    mkdir -p "$out/c" "$out/rust" "$out/go"
+
+    echo "==> Building C test binaries..."
+    gcc -O2 -Wall -static-pie -fPIE -o "$out/c/hello" "{{examples_dir}}/c/hello.c"
+    gcc -O2 -Wall -static-pie -fPIE -o "$out/c/goodbye" "{{examples_dir}}/c/goodbye.c"
+    gcc -O2 -Wall -static-pie -fPIE -o "$out/c/env_vars" "{{examples_dir}}/c/env_vars.c"
+
+    echo "==> Building C++ test binaries..."
+    g++ -O2 -Wall -static-pie -fPIE -o "$out/c/hello_cpp" "{{examples_dir}}/c/hello_cpp.cpp"
+
+    echo "==> Building Rust test binaries..."
+    rustc -C opt-level=2 -C target-feature=+crt-static -C relocation-model=pie \
+        -o "$out/rust/hello" "{{examples_dir}}/rust/hello.rs"
+    rustc -C opt-level=2 -C target-feature=+crt-static -C relocation-model=pie \
+        -o "$out/rust/env_vars" "{{examples_dir}}/rust/env_vars.rs"
+
+    echo "==> Building Go test binaries..."
+    CGO_ENABLED=0 go build -buildmode=pie -ldflags="-s -w" \
+        -o "$out/go/hello" "{{examples_dir}}/go/hello.go"
+    CGO_ENABLED=0 go build -buildmode=pie -ldflags="-s -w" \
+        -o "$out/go/env_vars" "{{examples_dir}}/go/env_vars.go"
+
+    echo "==> Done: test binaries in $out"
+
 # ── Test ─────────────────────────────────────────────────────────
 
 # Run integration tests
@@ -469,7 +505,9 @@ bench runtime *mode:
     done
 
     # ── Compact summary table ──────────────────────────────────
-    jsonfile="{{root_dir}}/bench-results.json"
+    # Use $PWD (Unix-style) instead of {{root_dir}} — awk treats
+    # backslashes in Windows paths as escape sequences.
+    jsonfile="$PWD/bench-results.json"
     echo ""
     echo ""
     echo "╔══════════════════════════════════════════════════════════════╗"
