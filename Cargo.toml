@@ -16,9 +16,9 @@ hyperlight-common = { git = "https://github.com/hyperlight-dev/hyperlight.git", 
 hyperlight-host = { git = "https://github.com/hyperlight-dev/hyperlight.git", branch = "hluk" }
 tracing = "0.1"
 
-# Host I/O — filesystem (cap-std) and networking (socket2).
+# Host I/O — filesystem (cap-std) and networking (rustix).
 cap-std = "3"
-socket2 = { version = "0.5", features = ["all"] }
+rustix = { version = "1", features = ["net", "event"] }
 libc = "0.2"
 
 # Optional — CLI only.

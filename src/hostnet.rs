@@ -1,4 +1,4 @@
-//! Host networking — individual `net_*` host functions backed by [`socket2`].
+//! Host networking — individual `net_*` host functions backed by [`rustix`].
 //!
 //! Note: A Hyperlight host function call is a synchronous VM exit — the guest
 //! is fully paused until the call returns.  This means blocking sockets
@@ -11,26 +11,82 @@
 //!   negative = `-errno` on error.
 //! - **`Vec<u8>` returns**: first 4 bytes are `i32` status, followed by
 //!   packed data on success.
+//!
+//! ## Cross-platform strategy
+//!
+//! All socket operations go through `rustix`, which internally dispatches
+//! to the correct platform syscall (Linux `poll`/`setsockopt`/… vs Winsock
+//! `WSAPoll`/`setsockopt`/…).  The only remaining platform-specific code
+//! is [`neg_errno`], which maps `rustix::io::Errno` to Linux errno values
+//! for the guest (a Linux unikernel).
 
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use hyperlight_host::func::Registerable;
-use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::fd::OwnedFd;
+use rustix::io::Errno;
+use rustix::net::{
+    AddressFamily, RecvFlags, SendFlags, SocketType,
+    self as rnet, sockopt,
+};
 
 use crate::net_policy::{self, ListenPorts, NetworkPolicy};
 
-#[cfg(windows)]
-use std::os::windows::io::AsRawSocket;
-
 const MAX_SOCKETS: usize = 1024;
+
+// ── Linux errno values ──────────────────────────────────────────────
+//
+// The guest is a Linux unikernel (Unikraft) and expects POSIX errno
+// values.  On Linux hosts `Errno::raw_os_error()` already returns
+// these, but on Windows it returns Winsock error codes (10000+).
+// Mapping through `Errno` variants gives us platform-independent
+// values the guest understands.
+
+/// Map a `rustix::io::Errno` to the corresponding Linux errno integer.
+///
+/// `rustix::io::Errno` uses the same variant names on every platform
+/// (e.g. `Errno::CONNREFUSED`), so the match works identically on
+/// Linux and Windows — the difference is hidden inside rustix.
+fn errno_to_linux(e: Errno) -> i32 {
+    match e {
+        Errno::INTR => 4,
+        Errno::IO => 5,
+        Errno::BADF => 9,
+        Errno::AGAIN => 11,
+        Errno::ACCESS => 13,
+        Errno::FAULT => 14,
+        Errno::INVAL => 22,
+        Errno::MFILE => 24,
+        Errno::NOTSOCK => 88,
+        Errno::PROTONOSUPPORT => 93,
+        Errno::AFNOSUPPORT => 97,
+        Errno::ADDRINUSE => 98,
+        Errno::ADDRNOTAVAIL => 99,
+        Errno::NETDOWN => 100,
+        Errno::NETUNREACH => 101,
+        Errno::CONNABORTED => 103,
+        Errno::CONNRESET => 104,
+        Errno::NOBUFS => 105,
+        Errno::ISCONN => 106,
+        Errno::NOTCONN => 107,
+        Errno::TIMEDOUT => 110,
+        Errno::CONNREFUSED => 111,
+        Errno::HOSTUNREACH => 113,
+        Errno::ALREADY => 114,
+        Errno::INPROGRESS => 115,
+        _ => 5, // EIO
+    }
+}
 
 // ── SocketTable ──────────────────────────────────────────────────────
 
 struct SocketTable {
-    sockets: HashMap<i32, Socket>,
+    sockets: HashMap<i32, OwnedFd>,
     next_fd: i32,
 }
 
@@ -42,9 +98,9 @@ impl SocketTable {
         }
     }
 
-    fn insert(&mut self, socket: Socket) -> Result<i32, i32> {
+    fn insert(&mut self, socket: OwnedFd) -> Result<i32, i32> {
         if self.sockets.len() >= MAX_SOCKETS {
-            return Err(libc::EMFILE);
+            return Err(24); // EMFILE
         }
         let fd = self.next_fd;
         self.next_fd = self.next_fd.wrapping_add(1);
@@ -52,11 +108,11 @@ impl SocketTable {
         Ok(fd)
     }
 
-    fn get(&self, fd: i32) -> Option<&Socket> {
+    fn get(&self, fd: i32) -> Option<&OwnedFd> {
         self.sockets.get(&fd)
     }
 
-    fn remove(&mut self, fd: i32) -> Option<Socket> {
+    fn remove(&mut self, fd: i32) -> Option<OwnedFd> {
         self.sockets.remove(&fd)
     }
 }
@@ -65,156 +121,6 @@ type Table = Arc<Mutex<SocketTable>>;
 
 fn lock(t: &Table) -> std::sync::MutexGuard<'_, SocketTable> {
     t.lock().unwrap()
-}
-
-// ── Windows socket FFI ──────────────────────────────────────────────
-
-/// WSAPOLLFD — mirrors the Winsock struct for [`WSAPoll`].
-#[cfg(windows)]
-#[repr(C)]
-struct WsaPollFd {
-    fd: usize, // SOCKET (UINT_PTR)
-    events: i16,
-    revents: i16,
-}
-
-#[cfg(windows)]
-const INVALID_SOCKET: usize = !0;
-
-#[cfg(windows)]
-unsafe extern "system" {
-    fn WSAPoll(fdarray: *mut WsaPollFd, nfds: u32, timeout: i32) -> i32;
-    fn WSAGetLastError() -> i32;
-    #[link_name = "getsockopt"]
-    fn ws2_getsockopt(s: usize, level: i32, optname: i32, optval: *mut u8, optlen: *mut i32)
-    -> i32;
-    #[link_name = "setsockopt"]
-    fn ws2_setsockopt(s: usize, level: i32, optname: i32, optval: *const u8, optlen: i32) -> i32;
-}
-
-/// Translate a Winsock error code to a Linux errno value.
-///
-/// The guest is a Linux unikernel (Unikraft) and expects POSIX errno
-/// semantics.  Windows CRT errno values (< 200) use the same numbering
-/// as POSIX; Winsock error codes (10000+) need manual translation.
-#[cfg(windows)]
-fn winsock_to_posix(code: i32) -> i32 {
-    if code < 200 {
-        return code; // CRT errno — same numbering as POSIX
-    }
-    match code {
-        10004 => 4,   // WSAEINTR        -> EINTR
-        10009 => 9,   // WSAEBADF        -> EBADF
-        10013 => 13,  // WSAEACCES       -> EACCES
-        10014 => 14,  // WSAEFAULT       -> EFAULT
-        10022 => 22,  // WSAEINVAL       -> EINVAL
-        10024 => 24,  // WSAEMFILE       -> EMFILE
-        10035 => 11,  // WSAEWOULDBLOCK  -> EAGAIN
-        10036 => 115, // WSAEINPROGRESS  -> EINPROGRESS
-        10037 => 114, // WSAEALREADY     -> EALREADY
-        10038 => 88,  // WSAENOTSOCK     -> ENOTSOCK
-        10048 => 98,  // WSAEADDRINUSE   -> EADDRINUSE
-        10049 => 99,  // WSAEADDRNOTAVAIL-> EADDRNOTAVAIL
-        10050 => 100, // WSAENETDOWN     -> ENETDOWN
-        10051 => 101, // WSAENETUNREACH  -> ENETUNREACH
-        10053 => 103, // WSAECONNABORTED -> ECONNABORTED
-        10054 => 104, // WSAECONNRESET   -> ECONNRESET
-        10055 => 105, // WSAENOBUFS      -> ENOBUFS
-        10056 => 106, // WSAEISCONN      -> EISCONN
-        10057 => 107, // WSAENOTCONN     -> ENOTCONN
-        10060 => 110, // WSAETIMEDOUT    -> ETIMEDOUT
-        10061 => 111, // WSAECONNREFUSED -> ECONNREFUSED
-        10065 => 113, // WSAEHOSTUNREACH -> EHOSTUNREACH
-        _ => 5,       // EIO
-    }
-}
-
-/// Translate Linux poll event bits to Winsock WSAPOLLFD event bits.
-///
-/// The guest sends Linux `<poll.h>` constants; Winsock defines different
-/// values for the same concepts.
-#[cfg(windows)]
-fn poll_events_to_win(linux: i16) -> i16 {
-    let mut win: i16 = 0;
-    // POLLIN  (Linux 0x0001) → POLLRDNORM|POLLRDBAND (Win 0x0300)
-    if linux & 0x0001 != 0 {
-        win |= 0x0300;
-    }
-    // POLLPRI (Linux 0x0002) → POLLPRI (Win 0x0400)
-    if linux & 0x0002 != 0 {
-        win |= 0x0400;
-    }
-    // POLLOUT (Linux 0x0004) → POLLWRNORM (Win 0x0010)
-    if linux & 0x0004 != 0 {
-        win |= 0x0010;
-    }
-    win
-}
-
-/// Translate Winsock WSAPOLLFD revents back to Linux constants.
-#[cfg(windows)]
-fn poll_revents_to_linux(win: i16) -> i16 {
-    let mut linux: i16 = 0;
-    // POLLRDNORM|POLLRDBAND (Win 0x0300) → POLLIN (Linux 0x0001)
-    if win & 0x0300 != 0 {
-        linux |= 0x0001;
-    }
-    // POLLPRI (Win 0x0400) → POLLPRI (Linux 0x0002)
-    if win & 0x0400 != 0 {
-        linux |= 0x0002;
-    }
-    // POLLWRNORM|POLLWRBAND (Win 0x0030) → POLLOUT (Linux 0x0004)
-    if win & 0x0030 != 0 {
-        linux |= 0x0004;
-    }
-    // POLLERR (Win 0x0001) → POLLERR (Linux 0x0008)
-    if win & 0x0001 != 0 {
-        linux |= 0x0008;
-    }
-    // POLLHUP (Win 0x0002) → POLLHUP (Linux 0x0010)
-    if win & 0x0002 != 0 {
-        linux |= 0x0010;
-    }
-    // POLLNVAL (Win 0x0004) → POLLNVAL (Linux 0x0020)
-    if win & 0x0004 != 0 {
-        linux |= 0x0020;
-    }
-    linux
-}
-
-/// Translate Linux socket option (level, optname) to Windows equivalents.
-///
-/// The guest sends Linux constants; Winsock uses different values for
-/// `SOL_SOCKET` options.  `IPPROTO_TCP` options are the same on both.
-///
-/// For unrecognised `SOL_SOCKET` options the level is still translated
-/// to `0xFFFF` — leaving it as `1` (Linux `SOL_SOCKET`) is an invalid
-/// protocol level on Windows and causes `WSAEINVAL`.
-#[cfg(windows)]
-fn translate_sockopt(level: i32, optname: i32) -> (i32, i32) {
-    const LINUX_SOL_SOCKET: i32 = 1;
-    const WIN_SOL_SOCKET: i32 = 0xFFFF_i32;
-    match (level, optname) {
-        (LINUX_SOL_SOCKET, 1) => (WIN_SOL_SOCKET, 1), // SO_DEBUG
-        (LINUX_SOL_SOCKET, 2) => (WIN_SOL_SOCKET, 4), // SO_REUSEADDR
-        (LINUX_SOL_SOCKET, 3) => (WIN_SOL_SOCKET, 0x1008), // SO_TYPE
-        (LINUX_SOL_SOCKET, 4) => (WIN_SOL_SOCKET, 0x1007), // SO_ERROR
-        (LINUX_SOL_SOCKET, 5) => (WIN_SOL_SOCKET, 0x0010), // SO_DONTROUTE
-        (LINUX_SOL_SOCKET, 6) => (WIN_SOL_SOCKET, 0x0020), // SO_BROADCAST
-        (LINUX_SOL_SOCKET, 7) => (WIN_SOL_SOCKET, 0x1001), // SO_SNDBUF
-        (LINUX_SOL_SOCKET, 8) => (WIN_SOL_SOCKET, 0x1002), // SO_RCVBUF
-        (LINUX_SOL_SOCKET, 9) => (WIN_SOL_SOCKET, 8), // SO_KEEPALIVE
-        (LINUX_SOL_SOCKET, 10) => (WIN_SOL_SOCKET, 0x0100), // SO_OOBINLINE
-        (LINUX_SOL_SOCKET, 13) => (WIN_SOL_SOCKET, 0x0080), // SO_LINGER
-        (LINUX_SOL_SOCKET, 15) => (WIN_SOL_SOCKET, 4), // SO_REUSEPORT -> SO_REUSEADDR
-        (LINUX_SOL_SOCKET, 20) => (WIN_SOL_SOCKET, 0x1006), // SO_RCVTIMEO
-        (LINUX_SOL_SOCKET, 21) => (WIN_SOL_SOCKET, 0x1005), // SO_SNDTIMEO
-        // Unrecognised SOL_SOCKET option — still translate the level.
-        (LINUX_SOL_SOCKET, _) => (WIN_SOL_SOCKET, optname),
-        // IPPROTO_TCP, IPPROTO_IPV6, etc. share the same level/optname
-        // numbering on both platforms.
-        _ => (level, optname),
-    }
 }
 
 // ── Registration ─────────────────────────────────────────────────────
@@ -262,41 +168,40 @@ fn reg_socket(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
         "net_socket",
         move |family: i32, ty: i32, proto: i32| -> hyperlight_host::Result<i32> {
             let domain = match family {
-                2 => Domain::IPV4,
-                10 => Domain::IPV6,
-                _ => return Ok(-libc::EAFNOSUPPORT),
+                2 => AddressFamily::INET,
+                10 => AddressFamily::INET6,
+                _ => return Ok(-97), // EAFNOSUPPORT
             };
             let sock_type = match ty & 0xFF {
-                1 => Type::STREAM,
-                2 => Type::DGRAM,
-                _ => return Ok(-libc::EPROTONOSUPPORT),
+                1 => SocketType::STREAM,
+                2 => SocketType::DGRAM,
+                _ => return Ok(-93), // EPROTONOSUPPORT
             };
-            let protocol = if proto == 0 {
-                None
-            } else {
-                Some(Protocol::from(proto))
+            let protocol = match proto {
+                0 => None,
+                6 => Some(rustix::net::ipproto::TCP),
+                17 => Some(rustix::net::ipproto::UDP),
+                _ => return Ok(-93), // EPROTONOSUPPORT
             };
 
-            match Socket::new(domain, sock_type, protocol) {
+            match rnet::socket(domain, sock_type, protocol) {
                 Ok(sock) => {
-                    // Windows TCP buffers default to 8 KB send / 64 KB recv.
-                    // The guest uses cooperative threading, so a blocking
-                    // send() pauses the entire VM — if the combined buffer
-                    // space is smaller than the payload, the receiver thread
-                    // never runs and the send deadlocks.  256 KB per buffer
-                    // matches Linux auto-tuning defaults and avoids this.
-                    #[cfg(windows)]
-                    {
-                        let _ = sock.set_send_buffer_size(256 * 1024);
-                        let _ = sock.set_recv_buffer_size(256 * 1024);
-                    }
+                    // Increase socket buffer sizes to match Linux auto-tuning
+                    // defaults.  The guest uses cooperative threading (single
+                    // vCPU), so a blocking send() pauses the entire VM.  Small
+                    // default buffers (8 KB send on Windows) can cause
+                    // deadlocks when the payload exceeds the combined buffer
+                    // space.  256 KB per direction matches Linux defaults.
+                    let _ = sockopt::set_socket_send_buffer_size(&sock, 256 * 1024);
+                    let _ = sockopt::set_socket_recv_buffer_size(&sock, 256 * 1024);
+
                     let mut tbl = lock(&tbl);
                     match tbl.insert(sock) {
                         Ok(fd) => Ok(fd),
                         Err(e) => Ok(-e),
                     }
                 }
-                Err(e) => Ok(neg_errno(e)),
+                Err(e) => Ok(-errno_to_linux(e)),
             }
         },
     )
@@ -315,22 +220,22 @@ fn reg_bind(
         move |fd: i32, family: i32, addr: String, port: i32| -> hyperlight_host::Result<i32> {
             let sa = match parse_addr(family, &addr, port) {
                 Some(a) => a,
-                None => return Ok(-libc::EINVAL),
+                None => return Ok(-22), // EINVAL
             };
             // Enforce listen-port allowlist (skip for port 0 = ephemeral).
             if sa.port() != 0
                 && let Some(ref lp) = lp
                 && lp.check(sa.port()).is_err()
             {
-                return Ok(-libc::EACCES);
+                return Ok(-13); // EACCES
             }
             let tbl = lock(&tbl);
             match tbl.get(fd) {
-                Some(sock) => Ok(match sock.bind(&SockAddr::from(sa)) {
+                Some(sock) => Ok(match rnet::bind(sock, &sa) {
                     Ok(()) => 0,
-                    Err(e) => neg_errno(e),
+                    Err(e) => -errno_to_linux(e),
                 }),
-                None => Ok(-libc::EBADF),
+                None => Ok(-9), // EBADF
             }
         },
     )
@@ -344,11 +249,11 @@ fn reg_listen(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
         move |fd: i32, backlog: i32| -> hyperlight_host::Result<i32> {
             let tbl = lock(&tbl);
             match tbl.get(fd) {
-                Some(sock) => Ok(match sock.listen(backlog) {
+                Some(sock) => Ok(match rnet::listen(sock, backlog) {
                     Ok(()) => 0,
-                    Err(e) => neg_errno(e),
+                    Err(e) => -errno_to_linux(e),
                 }),
-                None => Ok(-libc::EBADF),
+                None => Ok(-9), // EBADF
             }
         },
     )
@@ -373,13 +278,13 @@ fn reg_accept(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
                 match tbl_guard.get(fd) {
                     Some(sock) => match sock.try_clone() {
                         Ok(s) => s,
-                        Err(e) => return Ok(errno_vec(e)),
+                        Err(e) => return Ok(errno_vec_io(e)),
                     },
-                    None => return Ok({ -libc::EBADF }.to_le_bytes().to_vec()),
+                    None => return Ok((-9i32).to_le_bytes().to_vec()), // EBADF
                 }
             };
             // Lock is released — safe to block on accept.
-            let (new_sock, peer) = match listener.accept() {
+            let (new_sock, peer) = match rnet::acceptfrom(&listener) {
                 Ok(pair) => pair,
                 Err(e) => return Ok(errno_vec(e)),
             };
@@ -387,13 +292,15 @@ fn reg_accept(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
                 let mut tbl_guard = lock(&tbl);
                 match tbl_guard.insert(new_sock) {
                     Ok(fd) => fd,
-                    Err(e) => return Ok({ -e }.to_le_bytes().to_vec()),
+                    Err(e) => return Ok((-e).to_le_bytes().to_vec()),
                 }
             };
             let mut buf = Vec::with_capacity(32);
             buf.extend(new_fd.to_le_bytes());
-            if let Some(sa) = peer.as_socket() {
-                pack_addr(&mut buf, &sa);
+            if let Some(addr) = peer {
+                if let Ok(sa) = SocketAddr::try_from(addr) {
+                    pack_addr(&mut buf, &sa);
+                }
             }
             Ok(buf)
         },
@@ -413,28 +320,31 @@ fn reg_connect(
         move |fd: i32, family: i32, addr: String, port: i32| -> hyperlight_host::Result<i32> {
             let sa = match parse_addr(family, &addr, port) {
                 Some(a) => a,
-                None => return Ok(-libc::EINVAL),
+                None => return Ok(-22), // EINVAL
             };
             // Enforce network policy.
             if let Some(ref pol) = pol
                 && pol.check(&sa).is_err()
             {
-                return Ok(-libc::EACCES);
+                return Ok(-13); // EACCES
             }
             let tbl = lock(&tbl);
             match tbl.get(fd) {
-                Some(sock) => Ok(match sock.connect(&SockAddr::from(sa)) {
+                Some(sock) => Ok(match rnet::connect(sock, &sa) {
                     Ok(()) => 0,
                     // Non-blocking connect in progress — treat as success.
-                    #[cfg(unix)]
-                    Err(e) if e.raw_os_error() == Some(libc::EINPROGRESS) => 0,
-                    #[cfg(windows)]
-                    Err(e) if e.raw_os_error() == Some(10035) => 0, // WSAEWOULDBLOCK
-                    #[cfg(windows)]
-                    Err(e) if e.raw_os_error() == Some(10036) => 0, // WSAEINPROGRESS
-                    Err(e) => neg_errno(e),
+                    // rustix maps WSAEWOULDBLOCK and WSAEINPROGRESS to
+                    // Errno::WOULDBLOCK and Errno::INPROGRESS respectively.
+                    Err(e)
+                        if e == Errno::INPROGRESS
+                            || e == Errno::WOULDBLOCK
+                            || e == Errno::ALREADY =>
+                    {
+                        0
+                    }
+                    Err(e) => -errno_to_linux(e),
                 }),
-                None => Ok(-libc::EBADF),
+                None => Ok(-9), // EBADF
             }
         },
     )
@@ -448,11 +358,11 @@ fn reg_send(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
         move |fd: i32, data: Vec<u8>| -> hyperlight_host::Result<i32> {
             let tbl = lock(&tbl);
             match tbl.get(fd) {
-                Some(sock) => Ok(match sock.send(&data) {
+                Some(sock) => Ok(match rnet::send(sock, &data, SendFlags::empty()) {
                     Ok(n) => n as i32,
-                    Err(e) => neg_errno(e),
+                    Err(e) => -errno_to_linux(e),
                 }),
-                None => Ok(-libc::EBADF),
+                None => Ok(-9), // EBADF
             }
         },
     )
@@ -476,21 +386,21 @@ fn reg_sendto(
               -> hyperlight_host::Result<i32> {
             let sa = match parse_addr(family, &addr, port) {
                 Some(a) => a,
-                None => return Ok(-libc::EINVAL),
+                None => return Ok(-22), // EINVAL
             };
             // Enforce network policy.
             if let Some(ref pol) = pol
                 && pol.check(&sa).is_err()
             {
-                return Ok(-libc::EACCES);
+                return Ok(-13); // EACCES
             }
             let tbl = lock(&tbl);
             match tbl.get(fd) {
-                Some(sock) => Ok(match sock.send_to(&data, &SockAddr::from(sa)) {
+                Some(sock) => Ok(match rnet::sendto(sock, &data, SendFlags::empty(), &sa) {
                     Ok(n) => n as i32,
-                    Err(e) => neg_errno(e),
+                    Err(e) => -errno_to_linux(e),
                 }),
-                None => Ok(-libc::EBADF),
+                None => Ok(-9), // EBADF
             }
         },
     )
@@ -522,15 +432,17 @@ fn reg_recvfrom(
                 match tbl.get(fd) {
                     Some(sock) => match sock.try_clone() {
                         Ok(s) => s,
-                        Err(e) => return Ok(errno_vec(e)),
+                        Err(e) => return Ok(errno_vec_io(e)),
                     },
-                    None => return Ok({ -libc::EBADF }.to_le_bytes().to_vec()),
+                    None => return Ok((-9i32).to_le_bytes().to_vec()), // EBADF
                 }
             };
             // Lock is released — safe to block on recv.
             let mut recv_buf = vec![MaybeUninit::uninit(); len];
-            match sock_clone.recv_from(&mut recv_buf) {
-                Ok((n, src_addr)) => {
+            match rnet::recvfrom(&sock_clone, &mut recv_buf[..], RecvFlags::empty()) {
+                Ok((_, n, src_addr)) => {
+                    let n = n.min(len);
+                    // SAFETY: recvfrom initialised the first `n` bytes.
                     let data: Vec<u8> = recv_buf[..n]
                         .iter()
                         .map(|b| unsafe { b.assume_init() })
@@ -539,7 +451,8 @@ fn reg_recvfrom(
                     // Learn IPs from DNS responses when using AllowList.
                     if let Some(ref pol) = pol
                         && let NetworkPolicy::AllowList(ref al) = **pol
-                        && let Some(sa) = src_addr.as_socket()
+                        && let Some(ref any) = src_addr
+                        && let Ok(sa) = SocketAddr::try_from(any.clone())
                         && sa.port() == 53
                     {
                         net_policy::learn_ips_from_dns_response(&data, al);
@@ -547,12 +460,14 @@ fn reg_recvfrom(
 
                     let mut buf = Vec::with_capacity(16 + n);
                     buf.extend((n as i32).to_le_bytes());
-                    if let Some(sa) = src_addr.as_socket() {
-                        pack_addr(&mut buf, &sa);
+                    if let Some(any) = src_addr {
+                        if let Ok(sa) = SocketAddr::try_from(any) {
+                            pack_addr(&mut buf, &sa);
+                        } else {
+                            pack_zero_addr(&mut buf);
+                        }
                     } else {
-                        buf.extend(0i32.to_le_bytes()); // family
-                        buf.extend(0u16.to_le_bytes()); // port
-                        buf.push(0); // addr_len
+                        pack_zero_addr(&mut buf);
                     }
                     buf.extend_from_slice(&data);
                     Ok(buf)
@@ -570,17 +485,17 @@ fn reg_shutdown(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Re
         "net_shutdown",
         move |fd: i32, how: i32| -> hyperlight_host::Result<i32> {
             let shut = match how {
-                0 => std::net::Shutdown::Read,
-                1 => std::net::Shutdown::Write,
-                _ => std::net::Shutdown::Both,
+                0 => rustix::net::Shutdown::Read,
+                1 => rustix::net::Shutdown::Write,
+                _ => rustix::net::Shutdown::Both,
             };
             let tbl = lock(&tbl);
             match tbl.get(fd) {
-                Some(sock) => Ok(match sock.shutdown(shut) {
+                Some(sock) => Ok(match rnet::shutdown(sock, shut) {
                     Ok(()) => 0,
-                    Err(e) => neg_errno(e),
+                    Err(e) => -errno_to_linux(e),
                 }),
-                None => Ok(-libc::EBADF),
+                None => Ok(-9), // EBADF
             }
         },
     )
@@ -593,7 +508,7 @@ fn reg_close(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resul
         "net_close",
         move |fd: i32| -> hyperlight_host::Result<i32> {
             let mut tbl = lock(&tbl);
-            tbl.remove(fd); // Socket::drop closes the fd
+            tbl.remove(fd); // OwnedFd::drop closes the fd
             Ok(0)
         },
     )
@@ -611,11 +526,15 @@ fn reg_getpeername(t: &mut impl Registerable, table: &Table) -> hyperlight_host:
         move |fd: i32| -> hyperlight_host::Result<Vec<u8>> {
             let tbl = lock(&tbl);
             match tbl.get(fd) {
-                Some(sock) => match sock.peer_addr() {
-                    Ok(a) => Ok(addr_result(&a)),
+                Some(sock) => match rnet::getpeername(sock) {
+                    Ok(Some(any)) => match SocketAddr::try_from(any) {
+                        Ok(sa) => Ok(addr_result(&sa)),
+                        Err(_) => Ok((-97i32).to_le_bytes().to_vec()), // EAFNOSUPPORT
+                    },
+                    Ok(None) => Ok((-107i32).to_le_bytes().to_vec()), // ENOTCONN
                     Err(e) => Ok(errno_vec(e)),
                 },
-                None => Ok({ -libc::EBADF }.to_le_bytes().to_vec()),
+                None => Ok((-9i32).to_le_bytes().to_vec()), // EBADF
             }
         },
     )
@@ -629,11 +548,14 @@ fn reg_getsockname(t: &mut impl Registerable, table: &Table) -> hyperlight_host:
         move |fd: i32| -> hyperlight_host::Result<Vec<u8>> {
             let tbl = lock(&tbl);
             match tbl.get(fd) {
-                Some(sock) => match sock.local_addr() {
-                    Ok(a) => Ok(addr_result(&a)),
+                Some(sock) => match rnet::getsockname(sock) {
+                    Ok(any) => match SocketAddr::try_from(any) {
+                        Ok(sa) => Ok(addr_result(&sa)),
+                        Err(_) => Ok((-97i32).to_le_bytes().to_vec()), // EAFNOSUPPORT
+                    },
                     Err(e) => Ok(errno_vec(e)),
                 },
-                None => Ok({ -libc::EBADF }.to_le_bytes().to_vec()),
+                None => Ok((-9i32).to_le_bytes().to_vec()), // EBADF
             }
         },
     )
@@ -647,56 +569,8 @@ fn reg_getsockopt(t: &mut impl Registerable, table: &Table) -> hyperlight_host::
         move |fd: i32, level: i32, optname: i32| -> hyperlight_host::Result<i32> {
             let tbl = lock(&tbl);
             match tbl.get(fd) {
-                Some(sock) => {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::io::AsRawFd;
-                        let mut val: i32 = 0;
-                        let mut len = std::mem::size_of::<i32>() as libc::socklen_t;
-                        let ret = unsafe {
-                            libc::getsockopt(
-                                sock.as_raw_fd(),
-                                level,
-                                optname,
-                                &mut val as *mut i32 as *mut libc::c_void,
-                                &mut len,
-                            )
-                        };
-                        if ret < 0 {
-                            Ok(neg_errno(std::io::Error::last_os_error()))
-                        } else {
-                            Ok(val)
-                        }
-                    }
-                    #[cfg(windows)]
-                    {
-                        let raw_sock = sock.as_raw_socket() as usize;
-                        let (win_level, win_optname) = translate_sockopt(level, optname);
-                        let mut val: i32 = 0;
-                        let mut len: i32 = std::mem::size_of::<i32>() as i32;
-                        let ret = unsafe {
-                            ws2_getsockopt(
-                                raw_sock,
-                                win_level,
-                                win_optname,
-                                &mut val as *mut i32 as *mut u8,
-                                &mut len,
-                            )
-                        };
-                        if ret != 0 {
-                            let err = unsafe { WSAGetLastError() };
-                            Ok(-winsock_to_posix(err))
-                        } else {
-                            // SO_ERROR returns a Winsock error code — translate
-                            // to Linux errno for the guest.
-                            if level == 1 && optname == 4 {
-                                val = winsock_to_posix(val);
-                            }
-                            Ok(val)
-                        }
-                    }
-                }
-                None => Ok(-libc::EBADF),
+                Some(sock) => Ok(get_sockopt(sock, level, optname)),
+                None => Ok(-9), // EBADF
             }
         },
     )
@@ -710,47 +584,8 @@ fn reg_setsockopt(t: &mut impl Registerable, table: &Table) -> hyperlight_host::
         move |fd: i32, level: i32, optname: i32, value: i32| -> hyperlight_host::Result<i32> {
             let tbl = lock(&tbl);
             match tbl.get(fd) {
-                Some(sock) => {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::io::AsRawFd;
-                        let ret = unsafe {
-                            libc::setsockopt(
-                                sock.as_raw_fd(),
-                                level,
-                                optname,
-                                &value as *const i32 as *const libc::c_void,
-                                std::mem::size_of::<i32>() as libc::socklen_t,
-                            )
-                        };
-                        if ret < 0 {
-                            Ok(neg_errno(std::io::Error::last_os_error()))
-                        } else {
-                            Ok(0)
-                        }
-                    }
-                    #[cfg(windows)]
-                    {
-                        let raw_sock = sock.as_raw_socket() as usize;
-                        let (win_level, win_optname) = translate_sockopt(level, optname);
-                        let ret = unsafe {
-                            ws2_setsockopt(
-                                raw_sock,
-                                win_level,
-                                win_optname,
-                                &value as *const i32 as *const u8,
-                                std::mem::size_of::<i32>() as i32,
-                            )
-                        };
-                        if ret != 0 {
-                            let err = unsafe { WSAGetLastError() };
-                            Ok(-winsock_to_posix(err))
-                        } else {
-                            Ok(0)
-                        }
-                    }
-                }
-                None => Ok(-libc::EBADF),
+                Some(sock) => Ok(set_sockopt(sock, level, optname, value)),
+                None => Ok(-9), // EBADF
             }
         },
     )
@@ -773,79 +608,85 @@ fn reg_poll(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
         move |pollfds_raw: Vec<u8>, timeout_ms: i32| -> hyperlight_host::Result<Vec<u8>> {
             let nfds = pollfds_raw.len() / 8;
 
-            #[cfg(unix)]
-            {
-                use std::os::unix::io::AsRawFd;
-                let tbl = lock(&tbl);
-                let mut fds: Vec<libc::pollfd> = (0..nfds)
-                    .map(|i| {
-                        let off = i * 8;
-                        let guest_fd =
-                            i32::from_le_bytes(pollfds_raw[off..off + 4].try_into().unwrap());
-                        let events =
-                            i16::from_le_bytes(pollfds_raw[off + 4..off + 6].try_into().unwrap());
-                        let raw_fd = tbl.get(guest_fd).map(|s| s.as_raw_fd()).unwrap_or(-1);
-                        libc::pollfd {
-                            fd: raw_fd,
-                            events,
-                            revents: 0,
-                        }
-                    })
-                    .collect();
-                drop(tbl); // release lock during blocking poll
+            // Translate guest event flags (Linux POLLIN/POLLOUT/POLLPRI
+            // constants) to rustix PollFlags (platform-independent).
+            let tbl = lock(&tbl);
+            let guest_fds: Vec<i32> = (0..nfds)
+                .map(|i| {
+                    let off = i * 8;
+                    i32::from_le_bytes(pollfds_raw[off..off + 4].try_into().unwrap())
+                })
+                .collect();
+            let guest_events: Vec<i16> = (0..nfds)
+                .map(|i| {
+                    let off = i * 8;
+                    i16::from_le_bytes(pollfds_raw[off + 4..off + 6].try_into().unwrap())
+                })
+                .collect();
 
-                let ret =
-                    unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout_ms) };
-
-                let mut buf = Vec::with_capacity(4 + nfds * 2);
-                if ret < 0 {
-                    buf.extend(neg_errno(std::io::Error::last_os_error()).to_le_bytes());
+            // Build PollFd array.  PollFd borrows the socket fds, so
+            // the table lock must be held during the poll call.
+            let mut fds: Vec<PollFd<'_>> = Vec::with_capacity(nfds);
+            let mut valid = vec![false; nfds];
+            for i in 0..nfds {
+                let events = linux_events_to_pollflags(guest_events[i]);
+                if let Some(sock) = tbl.get(guest_fds[i]) {
+                    fds.push(PollFd::new(sock, events));
+                    valid[i] = true;
                 } else {
-                    buf.extend((ret as i32).to_le_bytes());
+                    // Invalid fd — create a dummy PollFd for position.
+                    // We still need the right count for the output.
+                    // Use any valid fd with empty events; it won't trigger.
+                    // Actually, we'll handle NVAL in the output.
+                    if let Some(any_sock) = tbl.sockets.values().next() {
+                        fds.push(PollFd::new(any_sock, PollFlags::empty()));
+                    }
                 }
-                for pfd in &fds {
-                    buf.extend(pfd.revents.to_le_bytes());
-                }
-                Ok(buf)
             }
 
-            #[cfg(windows)]
-            {
-                let tbl = lock(&tbl);
-                let mut fds: Vec<WsaPollFd> = (0..nfds)
-                    .map(|i| {
-                        let off = i * 8;
-                        let guest_fd =
-                            i32::from_le_bytes(pollfds_raw[off..off + 4].try_into().unwrap());
-                        let events =
-                            i16::from_le_bytes(pollfds_raw[off + 4..off + 6].try_into().unwrap());
-                        let raw_sock = tbl
-                            .get(guest_fd)
-                            .map(|s| s.as_raw_socket() as usize)
-                            .unwrap_or(INVALID_SOCKET);
-                        WsaPollFd {
-                            fd: raw_sock,
-                            events: poll_events_to_win(events),
-                            revents: 0,
-                        }
-                    })
-                    .collect();
-                drop(tbl); // release lock during blocking poll
-
-                let ret = unsafe { WSAPoll(fds.as_mut_ptr(), fds.len() as u32, timeout_ms) };
-
+            // If we couldn't fill all positions (no valid sockets at all),
+            // just return NVAL for everything.
+            if fds.len() < nfds {
                 let mut buf = Vec::with_capacity(4 + nfds * 2);
-                if ret < 0 {
-                    let err = unsafe { WSAGetLastError() };
-                    buf.extend((-winsock_to_posix(err)).to_le_bytes());
-                } else {
-                    buf.extend((ret as i32).to_le_bytes());
+                buf.extend((-(22i32)).to_le_bytes()); // EINVAL
+                for _ in 0..nfds {
+                    buf.extend(0x0020i16.to_le_bytes()); // POLLNVAL
                 }
-                for pfd in &fds {
-                    buf.extend(poll_revents_to_linux(pfd.revents).to_le_bytes());
-                }
-                Ok(buf)
+                return Ok(buf);
             }
+
+            // Convert timeout: negative = infinite, 0 = immediate, positive = ms.
+            let timeout = if timeout_ms < 0 {
+                None
+            } else {
+                Some(Timespec {
+                    tv_sec: (timeout_ms / 1000) as _,
+                    tv_nsec: ((timeout_ms % 1000) as i64) * 1_000_000,
+                })
+            };
+
+            let ret = poll(&mut fds, timeout.as_ref());
+
+            let mut buf = Vec::with_capacity(4 + nfds * 2);
+            match ret {
+                Ok(n) => {
+                    buf.extend((n as i32).to_le_bytes());
+                    for (i, pfd) in fds.iter().enumerate() {
+                        if valid[i] {
+                            buf.extend(pollflags_to_linux_revents(pfd.revents()).to_le_bytes());
+                        } else {
+                            buf.extend(0x0020i16.to_le_bytes()); // POLLNVAL
+                        }
+                    }
+                }
+                Err(e) => {
+                    buf.extend((-errno_to_linux(e)).to_le_bytes());
+                    for _ in 0..nfds {
+                        buf.extend(0i16.to_le_bytes());
+                    }
+                }
+            }
+            Ok(buf)
         },
     )
 }
@@ -886,6 +727,205 @@ fn reg_nanosleep(t: &mut impl Registerable) -> hyperlight_host::Result<()> {
     )
 }
 
+// ── Sockopt dispatch ────────────────────────────────────────────────
+//
+// The guest sends Linux constants for level/optname.  rustix's typed
+// sockopt functions handle platform differences internally, so we just
+// need to map Linux constant pairs to the right function call.
+
+/// Linux socket option constants.
+const LINUX_SOL_SOCKET: i32 = 1;
+const LINUX_IPPROTO_TCP: i32 = 6;
+
+/// Dispatch a Linux getsockopt(level, optname) via rustix's typed API.
+fn get_sockopt(sock: &OwnedFd, level: i32, optname: i32) -> i32 {
+    match (level, optname) {
+        // SOL_SOCKET options
+        (LINUX_SOL_SOCKET, 2) => bool_to_i32(sockopt::socket_reuseaddr(sock)), // SO_REUSEADDR
+        (LINUX_SOL_SOCKET, 3) => {
+            // SO_TYPE
+            match sockopt::socket_type(sock) {
+                Ok(t) if t == SocketType::STREAM => 1,
+                Ok(t) if t == SocketType::DGRAM => 2,
+                Ok(_) => 0,
+                Err(e) => -errno_to_linux(e),
+            }
+        }
+        (LINUX_SOL_SOCKET, 4) => {
+            // SO_ERROR
+            match sockopt::socket_error(sock) {
+                Ok(Ok(())) => 0,
+                Ok(Err(e)) => errno_to_linux(e),
+                Err(e) => -errno_to_linux(e),
+            }
+        }
+        (LINUX_SOL_SOCKET, 6) => bool_to_i32(sockopt::socket_broadcast(sock)), // SO_BROADCAST
+        (LINUX_SOL_SOCKET, 7) => {
+            // SO_SNDBUF
+            match sockopt::socket_send_buffer_size(sock) {
+                Ok(n) => n as i32,
+                Err(e) => -errno_to_linux(e),
+            }
+        }
+        (LINUX_SOL_SOCKET, 8) => {
+            // SO_RCVBUF
+            match sockopt::socket_recv_buffer_size(sock) {
+                Ok(n) => n as i32,
+                Err(e) => -errno_to_linux(e),
+            }
+        }
+        (LINUX_SOL_SOCKET, 9) => bool_to_i32(sockopt::socket_keepalive(sock)), // SO_KEEPALIVE
+        (LINUX_SOL_SOCKET, 10) => bool_to_i32(sockopt::socket_oobinline(sock)), // SO_OOBINLINE
+        (LINUX_SOL_SOCKET, 13) => {
+            // SO_LINGER — return l_linger in seconds (0 if off)
+            match sockopt::socket_linger(sock) {
+                Ok(Some(dur)) => dur.as_secs() as i32,
+                Ok(None) => 0,
+                Err(e) => -errno_to_linux(e),
+            }
+        }
+        (LINUX_SOL_SOCKET, 20) => {
+            // SO_RCVTIMEO — return timeout in microseconds
+            match sockopt::socket_timeout(sock, sockopt::Timeout::Recv) {
+                Ok(Some(dur)) => dur.as_micros() as i32,
+                Ok(None) => 0,
+                Err(e) => -errno_to_linux(e),
+            }
+        }
+        (LINUX_SOL_SOCKET, 21) => {
+            // SO_SNDTIMEO — return timeout in microseconds
+            match sockopt::socket_timeout(sock, sockopt::Timeout::Send) {
+                Ok(Some(dur)) => dur.as_micros() as i32,
+                Ok(None) => 0,
+                Err(e) => -errno_to_linux(e),
+            }
+        }
+        // IPPROTO_TCP options
+        (LINUX_IPPROTO_TCP, 1) => bool_to_i32(sockopt::tcp_nodelay(sock)), // TCP_NODELAY
+        // Unknown option
+        _ => -92, // ENOPROTOOPT
+    }
+}
+
+/// Dispatch a Linux setsockopt(level, optname, value) via rustix's typed API.
+fn set_sockopt(sock: &OwnedFd, level: i32, optname: i32, value: i32) -> i32 {
+    let res = match (level, optname) {
+        // SOL_SOCKET options
+        (LINUX_SOL_SOCKET, 2) => sockopt::set_socket_reuseaddr(sock, value != 0), // SO_REUSEADDR
+        (LINUX_SOL_SOCKET, 6) => sockopt::set_socket_broadcast(sock, value != 0), // SO_BROADCAST
+        (LINUX_SOL_SOCKET, 7) => {
+            sockopt::set_socket_send_buffer_size(sock, value as usize) // SO_SNDBUF
+        }
+        (LINUX_SOL_SOCKET, 8) => {
+            sockopt::set_socket_recv_buffer_size(sock, value as usize) // SO_RCVBUF
+        }
+        (LINUX_SOL_SOCKET, 9) => sockopt::set_socket_keepalive(sock, value != 0), // SO_KEEPALIVE
+        (LINUX_SOL_SOCKET, 10) => sockopt::set_socket_oobinline(sock, value != 0), // SO_OOBINLINE
+        (LINUX_SOL_SOCKET, 13) => {
+            // SO_LINGER
+            let linger = if value > 0 {
+                Some(Duration::from_secs(value as u64))
+            } else {
+                None
+            };
+            sockopt::set_socket_linger(sock, linger)
+        }
+        #[cfg(not(windows))]
+        (LINUX_SOL_SOCKET, 15) => sockopt::set_socket_reuseport(sock, value != 0), // SO_REUSEPORT
+        #[cfg(windows)]
+        (LINUX_SOL_SOCKET, 15) => sockopt::set_socket_reuseaddr(sock, value != 0), // SO_REUSEPORT → REUSEADDR
+        (LINUX_SOL_SOCKET, 20) => {
+            // SO_RCVTIMEO — value in microseconds from guest
+            let timeout = if value > 0 {
+                Some(Duration::from_micros(value as u64))
+            } else {
+                None
+            };
+            sockopt::set_socket_timeout(sock, sockopt::Timeout::Recv, timeout)
+        }
+        (LINUX_SOL_SOCKET, 21) => {
+            // SO_SNDTIMEO — value in microseconds from guest
+            let timeout = if value > 0 {
+                Some(Duration::from_micros(value as u64))
+            } else {
+                None
+            };
+            sockopt::set_socket_timeout(sock, sockopt::Timeout::Send, timeout)
+        }
+        // IPPROTO_TCP options
+        (LINUX_IPPROTO_TCP, 1) => sockopt::set_tcp_nodelay(sock, value != 0), // TCP_NODELAY
+        // Unsupported — including SO_DEBUG (1), SO_DONTROUTE (5),
+        // SO_TYPE (3, read-only), SO_ERROR (4, read-only).
+        _ => return -92, // ENOPROTOOPT
+    };
+    match res {
+        Ok(()) => 0,
+        Err(e) => -errno_to_linux(e),
+    }
+}
+
+/// Convert a `Result<bool>` sockopt getter to an i32 for the guest.
+fn bool_to_i32(r: Result<bool, Errno>) -> i32 {
+    match r {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(e) => -errno_to_linux(e),
+    }
+}
+
+// ── Poll flag translation ───────────────────────────────────────────
+//
+// The guest sends Linux `<poll.h>` constants.  rustix's `PollFlags`
+// uses the correct platform values internally — we just need to convert
+// between the guest's Linux constants and rustix's portable flags.
+
+/// Linux poll(2) event constants.
+const LINUX_POLLIN: i16 = 0x0001;
+const LINUX_POLLPRI: i16 = 0x0002;
+const LINUX_POLLOUT: i16 = 0x0004;
+const LINUX_POLLERR: i16 = 0x0008;
+const LINUX_POLLHUP: i16 = 0x0010;
+const LINUX_POLLNVAL: i16 = 0x0020;
+
+/// Translate Linux poll event bits to rustix PollFlags.
+fn linux_events_to_pollflags(linux: i16) -> PollFlags {
+    let mut flags = PollFlags::empty();
+    if linux & LINUX_POLLIN != 0 {
+        flags |= PollFlags::IN;
+    }
+    if linux & LINUX_POLLPRI != 0 {
+        flags |= PollFlags::PRI;
+    }
+    if linux & LINUX_POLLOUT != 0 {
+        flags |= PollFlags::OUT;
+    }
+    flags
+}
+
+/// Translate rustix PollFlags revents back to Linux constants.
+fn pollflags_to_linux_revents(flags: PollFlags) -> i16 {
+    let mut linux: i16 = 0;
+    if flags.contains(PollFlags::IN) {
+        linux |= LINUX_POLLIN;
+    }
+    if flags.contains(PollFlags::PRI) {
+        linux |= LINUX_POLLPRI;
+    }
+    if flags.contains(PollFlags::OUT) {
+        linux |= LINUX_POLLOUT;
+    }
+    if flags.contains(PollFlags::ERR) {
+        linux |= LINUX_POLLERR;
+    }
+    if flags.contains(PollFlags::HUP) {
+        linux |= LINUX_POLLHUP;
+    }
+    if flags.contains(PollFlags::NVAL) {
+        linux |= LINUX_POLLNVAL;
+    }
+    linux
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 fn parse_addr(family: i32, addr: &str, port: i32) -> Option<SocketAddr> {
@@ -916,35 +956,35 @@ fn pack_addr(buf: &mut Vec<u8>, addr: &SocketAddr) {
     }
 }
 
+/// Pack a zero address (when no source address is available).
+fn pack_zero_addr(buf: &mut Vec<u8>) {
+    buf.extend(0i32.to_le_bytes()); // family
+    buf.extend(0u16.to_le_bytes()); // port
+    buf.push(0); // addr_len
+}
+
 /// Build a successful address result: status=0 + packed addr.
-fn addr_result(sa: &SockAddr) -> Vec<u8> {
-    match sa.as_socket() {
-        Some(addr) => {
-            let mut buf = Vec::with_capacity(24);
-            buf.extend(0i32.to_le_bytes());
-            pack_addr(&mut buf, &addr);
-            buf
+fn addr_result(sa: &SocketAddr) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(24);
+    buf.extend(0i32.to_le_bytes());
+    pack_addr(&mut buf, sa);
+    buf
+}
+
+/// Encode a rustix Errno as a 4-byte `-errno` Vec (Linux errno).
+fn errno_vec(e: Errno) -> Vec<u8> {
+    (-errno_to_linux(e)).to_le_bytes().to_vec()
+}
+
+/// Encode a std::io::Error as a 4-byte `-errno` Vec (Linux errno).
+fn errno_vec_io(e: std::io::Error) -> Vec<u8> {
+    let code = match e.raw_os_error() {
+        Some(code) => {
+            // On Windows, raw_os_error() returns Winsock codes.
+            // Try to match via Errno for portable translation.
+            errno_to_linux(Errno::from_raw_os_error(code))
         }
-        None => { -libc::EAFNOSUPPORT }.to_le_bytes().to_vec(),
-    }
-}
-
-/// Encode an I/O error as a 4-byte `-errno` Vec.
-fn errno_vec(e: std::io::Error) -> Vec<u8> {
-    neg_errno(e).to_le_bytes().to_vec()
-}
-
-/// Convert an I/O error to `-errno` as i32.
-///
-/// On Unix, `raw_os_error()` returns POSIX errno values directly.
-/// On Windows, it returns Winsock/Win32 error codes that must be
-/// translated to POSIX values for the Unikraft guest.
-fn neg_errno(e: std::io::Error) -> i32 {
-    match e.raw_os_error() {
-        #[cfg(unix)]
-        Some(code) => -code,
-        #[cfg(windows)]
-        Some(code) => -winsock_to_posix(code),
-        None => -libc::EIO,
-    }
+        None => 5, // EIO
+    };
+    (-code).to_le_bytes().to_vec()
 }
