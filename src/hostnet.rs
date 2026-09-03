@@ -129,6 +129,59 @@ fn winsock_to_posix(code: i32) -> i32 {
     }
 }
 
+/// Translate Linux poll event bits to Winsock WSAPOLLFD event bits.
+///
+/// The guest sends Linux `<poll.h>` constants; Winsock defines different
+/// values for the same concepts.
+#[cfg(windows)]
+fn poll_events_to_win(linux: i16) -> i16 {
+    let mut win: i16 = 0;
+    // POLLIN  (Linux 0x0001) → POLLRDNORM|POLLRDBAND (Win 0x0300)
+    if linux & 0x0001 != 0 {
+        win |= 0x0300;
+    }
+    // POLLPRI (Linux 0x0002) → POLLPRI (Win 0x0400)
+    if linux & 0x0002 != 0 {
+        win |= 0x0400;
+    }
+    // POLLOUT (Linux 0x0004) → POLLWRNORM (Win 0x0010)
+    if linux & 0x0004 != 0 {
+        win |= 0x0010;
+    }
+    win
+}
+
+/// Translate Winsock WSAPOLLFD revents back to Linux constants.
+#[cfg(windows)]
+fn poll_revents_to_linux(win: i16) -> i16 {
+    let mut linux: i16 = 0;
+    // POLLRDNORM|POLLRDBAND (Win 0x0300) → POLLIN (Linux 0x0001)
+    if win & 0x0300 != 0 {
+        linux |= 0x0001;
+    }
+    // POLLPRI (Win 0x0400) → POLLPRI (Linux 0x0002)
+    if win & 0x0400 != 0 {
+        linux |= 0x0002;
+    }
+    // POLLWRNORM|POLLWRBAND (Win 0x0030) → POLLOUT (Linux 0x0004)
+    if win & 0x0030 != 0 {
+        linux |= 0x0004;
+    }
+    // POLLERR (Win 0x0001) → POLLERR (Linux 0x0008)
+    if win & 0x0001 != 0 {
+        linux |= 0x0008;
+    }
+    // POLLHUP (Win 0x0002) → POLLHUP (Linux 0x0010)
+    if win & 0x0002 != 0 {
+        linux |= 0x0010;
+    }
+    // POLLNVAL (Win 0x0004) → POLLNVAL (Linux 0x0020)
+    if win & 0x0004 != 0 {
+        linux |= 0x0020;
+    }
+    linux
+}
+
 /// Translate Linux socket option (level, optname) to Windows equivalents.
 ///
 /// The guest sends Linux constants; Winsock uses different values for
@@ -745,7 +798,7 @@ fn reg_poll(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
                             .unwrap_or(INVALID_SOCKET);
                         WsaPollFd {
                             fd: raw_sock,
-                            events,
+                            events: poll_events_to_win(events),
                             revents: 0,
                         }
                     })
@@ -762,7 +815,7 @@ fn reg_poll(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
                     buf.extend((ret as i32).to_le_bytes());
                 }
                 for pfd in &fds {
-                    buf.extend(pfd.revents.to_le_bytes());
+                    buf.extend(poll_revents_to_linux(pfd.revents).to_le_bytes());
                 }
                 Ok(buf)
             }
