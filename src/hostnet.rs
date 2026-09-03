@@ -22,6 +22,9 @@ use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
 use crate::net_policy::{self, ListenPorts, NetworkPolicy};
 
+#[cfg(windows)]
+use std::os::windows::io::AsRawSocket;
+
 const MAX_SOCKETS: usize = 1024;
 
 // ── SocketTable ──────────────────────────────────────────────────────
@@ -62,6 +65,87 @@ type Table = Arc<Mutex<SocketTable>>;
 
 fn lock(t: &Table) -> std::sync::MutexGuard<'_, SocketTable> {
     t.lock().unwrap()
+}
+
+// ── Windows socket FFI ──────────────────────────────────────────────
+
+/// WSAPOLLFD — mirrors the Winsock struct for [`WSAPoll`].
+#[cfg(windows)]
+#[repr(C)]
+struct WsaPollFd {
+    fd: usize, // SOCKET (UINT_PTR)
+    events: i16,
+    revents: i16,
+}
+
+#[cfg(windows)]
+const INVALID_SOCKET: usize = !0;
+
+#[cfg(windows)]
+unsafe extern "system" {
+    fn WSAPoll(fdarray: *mut WsaPollFd, nfds: u32, timeout: i32) -> i32;
+    fn WSAGetLastError() -> i32;
+    #[link_name = "getsockopt"]
+    fn ws2_getsockopt(s: usize, level: i32, optname: i32, optval: *mut u8, optlen: *mut i32)
+    -> i32;
+    #[link_name = "setsockopt"]
+    fn ws2_setsockopt(s: usize, level: i32, optname: i32, optval: *const u8, optlen: i32) -> i32;
+}
+
+/// Translate a Winsock error code to a Linux errno value.
+///
+/// The guest is a Linux unikernel (Unikraft) and expects POSIX errno
+/// semantics.  Windows CRT errno values (< 200) use the same numbering
+/// as POSIX; Winsock error codes (10000+) need manual translation.
+#[cfg(windows)]
+fn winsock_to_posix(code: i32) -> i32 {
+    if code < 200 {
+        return code; // CRT errno — same numbering as POSIX
+    }
+    match code {
+        10004 => 4,   // WSAEINTR        -> EINTR
+        10009 => 9,   // WSAEBADF        -> EBADF
+        10013 => 13,  // WSAEACCES       -> EACCES
+        10014 => 14,  // WSAEFAULT       -> EFAULT
+        10022 => 22,  // WSAEINVAL       -> EINVAL
+        10024 => 24,  // WSAEMFILE       -> EMFILE
+        10035 => 11,  // WSAEWOULDBLOCK  -> EAGAIN
+        10036 => 115, // WSAEINPROGRESS  -> EINPROGRESS
+        10037 => 114, // WSAEALREADY     -> EALREADY
+        10038 => 88,  // WSAENOTSOCK     -> ENOTSOCK
+        10048 => 98,  // WSAEADDRINUSE   -> EADDRINUSE
+        10049 => 99,  // WSAEADDRNOTAVAIL-> EADDRNOTAVAIL
+        10050 => 100, // WSAENETDOWN     -> ENETDOWN
+        10051 => 101, // WSAENETUNREACH  -> ENETUNREACH
+        10053 => 103, // WSAECONNABORTED -> ECONNABORTED
+        10054 => 104, // WSAECONNRESET   -> ECONNRESET
+        10055 => 105, // WSAENOBUFS      -> ENOBUFS
+        10056 => 106, // WSAEISCONN      -> EISCONN
+        10057 => 107, // WSAENOTCONN     -> ENOTCONN
+        10060 => 110, // WSAETIMEDOUT    -> ETIMEDOUT
+        10061 => 111, // WSAECONNREFUSED -> ECONNREFUSED
+        10065 => 113, // WSAEHOSTUNREACH -> EHOSTUNREACH
+        _ => 5,       // EIO
+    }
+}
+
+/// Translate Linux socket option (level, optname) to Windows equivalents.
+///
+/// The guest sends Linux constants; Winsock uses different values for
+/// `SOL_SOCKET` options.  `IPPROTO_TCP` options are the same on both.
+#[cfg(windows)]
+fn translate_sockopt(level: i32, optname: i32) -> (i32, i32) {
+    const LINUX_SOL_SOCKET: i32 = 1;
+    const WIN_SOL_SOCKET: i32 = 0xFFFF_i32;
+    match (level, optname) {
+        (LINUX_SOL_SOCKET, 2) => (WIN_SOL_SOCKET, 4), // SO_REUSEADDR
+        (LINUX_SOL_SOCKET, 4) => (WIN_SOL_SOCKET, 0x1007), // SO_ERROR
+        (LINUX_SOL_SOCKET, 7) => (WIN_SOL_SOCKET, 0x1001), // SO_SNDBUF
+        (LINUX_SOL_SOCKET, 8) => (WIN_SOL_SOCKET, 0x1002), // SO_RCVBUF
+        (LINUX_SOL_SOCKET, 9) => (WIN_SOL_SOCKET, 8), // SO_KEEPALIVE
+        (LINUX_SOL_SOCKET, 15) => (WIN_SOL_SOCKET, 0x1005), // SO_REUSEPORT -> SO_REUSEADDR
+        _ => (level, optname),                        // IPPROTO_TCP and others match
+    }
 }
 
 // ── Registration ─────────────────────────────────────────────────────
@@ -261,8 +345,13 @@ fn reg_connect(
             match tbl.get(fd) {
                 Some(sock) => Ok(match sock.connect(&SockAddr::from(sa)) {
                     Ok(()) => 0,
+                    // Non-blocking connect in progress — treat as success.
                     #[cfg(unix)]
                     Err(e) if e.raw_os_error() == Some(libc::EINPROGRESS) => 0,
+                    #[cfg(windows)]
+                    Err(e) if e.raw_os_error() == Some(10035) => 0, // WSAEWOULDBLOCK
+                    #[cfg(windows)]
+                    Err(e) if e.raw_os_error() == Some(10036) => 0, // WSAEINPROGRESS
                     Err(e) => neg_errno(e),
                 }),
                 None => Ok(-libc::EBADF),
@@ -499,10 +588,32 @@ fn reg_getsockopt(t: &mut impl Registerable, table: &Table) -> hyperlight_host::
                             Ok(val)
                         }
                     }
-                    #[cfg(not(unix))]
+                    #[cfg(windows)]
                     {
-                        let _ = (sock, level, optname);
-                        Ok(0)
+                        let raw_sock = sock.as_raw_socket() as usize;
+                        let (win_level, win_optname) = translate_sockopt(level, optname);
+                        let mut val: i32 = 0;
+                        let mut len: i32 = std::mem::size_of::<i32>() as i32;
+                        let ret = unsafe {
+                            ws2_getsockopt(
+                                raw_sock,
+                                win_level,
+                                win_optname,
+                                &mut val as *mut i32 as *mut u8,
+                                &mut len,
+                            )
+                        };
+                        if ret != 0 {
+                            let err = unsafe { WSAGetLastError() };
+                            Ok(-winsock_to_posix(err))
+                        } else {
+                            // SO_ERROR returns a Winsock error code — translate
+                            // to Linux errno for the guest.
+                            if level == 1 && optname == 4 {
+                                val = winsock_to_posix(val);
+                            }
+                            Ok(val)
+                        }
                     }
                 }
                 None => Ok(-libc::EBADF),
@@ -538,10 +649,25 @@ fn reg_setsockopt(t: &mut impl Registerable, table: &Table) -> hyperlight_host::
                             Ok(0)
                         }
                     }
-                    #[cfg(not(unix))]
+                    #[cfg(windows)]
                     {
-                        let _ = (sock, level, optname, value);
-                        Ok(0)
+                        let raw_sock = sock.as_raw_socket() as usize;
+                        let (win_level, win_optname) = translate_sockopt(level, optname);
+                        let ret = unsafe {
+                            ws2_setsockopt(
+                                raw_sock,
+                                win_level,
+                                win_optname,
+                                &value as *const i32 as *const u8,
+                                std::mem::size_of::<i32>() as i32,
+                            )
+                        };
+                        if ret != 0 {
+                            let err = unsafe { WSAGetLastError() };
+                            Ok(-winsock_to_posix(err))
+                        } else {
+                            Ok(0)
+                        }
                     }
                 }
                 None => Ok(-libc::EBADF),
@@ -603,10 +729,42 @@ fn reg_poll(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
                 Ok(buf)
             }
 
-            #[cfg(not(unix))]
+            #[cfg(windows)]
             {
-                let _ = (&tbl, pollfds_raw, timeout_ms, nfds);
-                Ok(0i32.to_le_bytes().to_vec())
+                let tbl = lock(&tbl);
+                let mut fds: Vec<WsaPollFd> = (0..nfds)
+                    .map(|i| {
+                        let off = i * 8;
+                        let guest_fd =
+                            i32::from_le_bytes(pollfds_raw[off..off + 4].try_into().unwrap());
+                        let events =
+                            i16::from_le_bytes(pollfds_raw[off + 4..off + 6].try_into().unwrap());
+                        let raw_sock = tbl
+                            .get(guest_fd)
+                            .map(|s| s.as_raw_socket() as usize)
+                            .unwrap_or(INVALID_SOCKET);
+                        WsaPollFd {
+                            fd: raw_sock,
+                            events,
+                            revents: 0,
+                        }
+                    })
+                    .collect();
+                drop(tbl); // release lock during blocking poll
+
+                let ret = unsafe { WSAPoll(fds.as_mut_ptr(), fds.len() as u32, timeout_ms) };
+
+                let mut buf = Vec::with_capacity(4 + nfds * 2);
+                if ret < 0 {
+                    let err = unsafe { WSAGetLastError() };
+                    buf.extend((-winsock_to_posix(err)).to_le_bytes());
+                } else {
+                    buf.extend((ret as i32).to_le_bytes());
+                }
+                for pfd in &fds {
+                    buf.extend(pfd.revents.to_le_bytes());
+                }
+                Ok(buf)
             }
         },
     )
@@ -697,6 +855,16 @@ fn errno_vec(e: std::io::Error) -> Vec<u8> {
 }
 
 /// Convert an I/O error to `-errno` as i32.
+///
+/// On Unix, `raw_os_error()` returns POSIX errno values directly.
+/// On Windows, it returns Winsock/Win32 error codes that must be
+/// translated to POSIX values for the Unikraft guest.
 fn neg_errno(e: std::io::Error) -> i32 {
-    -(e.raw_os_error().unwrap_or(libc::EIO))
+    match e.raw_os_error() {
+        #[cfg(unix)]
+        Some(code) => -code,
+        #[cfg(windows)]
+        Some(code) => -winsock_to_posix(code),
+        None => -libc::EIO,
+    }
 }
