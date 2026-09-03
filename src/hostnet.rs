@@ -38,6 +38,32 @@ use crate::net_policy::{self, ListenPorts, NetworkPolicy};
 
 const MAX_SOCKETS: usize = 1024;
 
+/// Set a socket to non-blocking mode on Windows.
+///
+/// On Unix this is handled via `SocketFlags::NONBLOCK` at creation time.
+/// On Windows the flag doesn't exist on `socket()`; we use
+/// `ioctlsocket(FIONBIO)` after creation instead.
+#[cfg(windows)]
+fn set_nonblocking(fd: &OwnedFd) -> rustix::io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    // SAFETY: FIONBIO with a pointer to a u32 is a well-defined Winsock
+    // ioctl.  The raw socket is valid for the lifetime of `fd`.
+    let rc = unsafe {
+        windows_sys::Win32::Networking::WinSock::ioctlsocket(
+            fd.as_raw_socket() as _,
+            windows_sys::Win32::Networking::WinSock::FIONBIO as _,
+            &mut 1u32,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(Errno::from_raw_os_error(unsafe {
+            windows_sys::Win32::Networking::WinSock::WSAGetLastError()
+        }))
+    }
+}
+
 // ── Linux errno values ──────────────────────────────────────────────
 //
 // The guest is a Linux unikernel (Unikraft) and expects POSIX errno
@@ -58,6 +84,11 @@ fn errno_to_linux(e: Errno) -> i32 {
         Errno::IO => 5,
         Errno::BADF => 9,
         Errno::AGAIN => 11,
+        // On Windows EWOULDBLOCK (140) != EAGAIN (11); on Linux they
+        // are the same value (11).  Map both to Linux EAGAIN so that
+        // the guest retry loop handles non-blocking I/O correctly.
+        #[cfg(windows)]
+        Errno::WOULDBLOCK => 11,
         Errno::ACCESS => 13,
         Errno::FAULT => 14,
         Errno::INVAL => 22,
@@ -198,18 +229,28 @@ fn reg_socket(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
 
             // Create the socket.  On Unix we pass CLOEXEC and, if the
             // guest requested it, NONBLOCK directly via socket_with().
-            // On Windows these flags don't exist; sockets are inherently
-            // non-inheritable and NONBLOCK is set via ioctlsocket later.
+            // On Windows, sockets are inherently non-inheritable;
+            // NONBLOCK is set via ioctlsocket after creation.
+            let nonblock = ty & 0x800 != 0;
+
             #[cfg(unix)]
             let sock_result = {
                 let mut flags = SocketFlags::CLOEXEC;
-                if ty & 0x800 != 0 {
+                if nonblock {
                     flags |= SocketFlags::NONBLOCK;
                 }
                 rnet::socket_with(domain, sock_type, flags, protocol)
             };
             #[cfg(not(unix))]
-            let sock_result = rnet::socket(domain, sock_type, protocol);
+            let sock_result = rnet::socket(domain, sock_type, protocol).and_then(|sock| {
+                if nonblock {
+                    // Match the Linux SOCK_NONBLOCK behaviour so that the
+                    // hostsock cooperative scheduler can poll without
+                    // blocking the vCPU.
+                    set_nonblocking(&sock)?;
+                }
+                Ok(sock)
+            });
             match sock_result {
                 Ok(sock) => {
                     // Increase socket buffer sizes for TCP to match Linux
@@ -310,6 +351,8 @@ fn reg_accept(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
                 }
             };
             // Lock is released — safe to block on accept.
+            #[cfg(windows)]
+            let _ = set_nonblocking(&listener);
             let (new_sock, peer) = match rnet::acceptfrom(&listener) {
                 Ok(pair) => pair,
                 Err(e) => return Ok(errno_vec(e)),
@@ -407,6 +450,11 @@ fn reg_send(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
                 }
             };
             // Lock is released — safe to block on send.
+            // On Windows, set the clone non-blocking: WSADuplicateSocket
+            // doesn't preserve FIONBIO, so the clone defaults to
+            // blocking which could hang the vCPU.
+            #[cfg(windows)]
+            let _ = set_nonblocking(&sock_clone);
             Ok(match rnet::send(&sock_clone, &data, SendFlags::empty()) {
                 Ok(n) => n as i32,
                 Err(e) => -errno_to_linux(e),
@@ -453,6 +501,8 @@ fn reg_sendto(
                 }
             };
             // Lock is released — safe to block on sendto.
+            #[cfg(windows)]
+            let _ = set_nonblocking(&sock_clone);
             Ok(
                 match rnet::sendto(&sock_clone, &data, SendFlags::empty(), &sa) {
                     Ok(n) => n as i32,
@@ -501,11 +551,17 @@ fn reg_recvfrom(
             // primary path on Windows — the source address is only
             // meaningful for UDP, and the guest can use getpeername()
             // when it needs the peer address.
+            //
+            // The clone must be non-blocking: WSADuplicateSocket does
+            // NOT preserve the FIONBIO flag, so clones default to
+            // blocking.  A blocking recv on a clone would hang the vCPU
+            // if no data is immediately available.
             #[cfg(windows)]
             let recv_result: Result<
                 (Vec<u8>, usize, Option<std::net::SocketAddr>),
                 Errno,
             > = {
+                let _ = set_nonblocking(&sock_clone);
                 let mut buf = vec![MaybeUninit::uninit(); len];
                 match rnet::recv(&sock_clone, &mut buf[..], RecvFlags::empty()) {
                     Ok(((init_data, _), n)) => {
