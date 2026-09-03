@@ -45,6 +45,21 @@ const MAX_SOCKETS: usize = 1024;
 /// `ioctlsocket(FIONBIO)` after creation instead.
 #[cfg(windows)]
 fn set_nonblocking(fd: &OwnedFd) -> rustix::io::Result<()> {
+    set_fionbio(fd, 1)
+}
+
+/// Restore a socket to blocking mode on Windows.
+///
+/// Used after non-blocking connect completes to leave the socket in the
+/// blocking state the guest expects.
+#[cfg(windows)]
+fn set_blocking(fd: &OwnedFd) -> rustix::io::Result<()> {
+    set_fionbio(fd, 0)
+}
+
+/// Low-level `ioctlsocket(FIONBIO)` wrapper.
+#[cfg(windows)]
+fn set_fionbio(fd: &OwnedFd, value: u32) -> rustix::io::Result<()> {
     use std::os::windows::io::AsRawSocket;
     // SAFETY: FIONBIO with a pointer to a u32 is a well-defined Winsock
     // ioctl.  The raw socket is valid for the lifetime of `fd`.
@@ -52,7 +67,7 @@ fn set_nonblocking(fd: &OwnedFd) -> rustix::io::Result<()> {
         windows_sys::Win32::Networking::WinSock::ioctlsocket(
             fd.as_raw_socket() as _,
             windows_sys::Win32::Networking::WinSock::FIONBIO as _,
-            &mut 1u32,
+            &mut { value },
         )
     };
     if rc == 0 {
@@ -145,6 +160,16 @@ impl SocketTable {
 
     fn remove(&mut self, fd: i32) -> Option<OwnedFd> {
         self.sockets.remove(&fd)
+    }
+
+    /// Put a socket back at a specific fd.
+    ///
+    /// Used by `reg_connect` on Windows: the socket is removed for the
+    /// duration of the non-blocking connect (so the lock can be dropped)
+    /// and then replaced at the same fd when done.
+    #[cfg(windows)]
+    fn replace(&mut self, fd: i32, socket: OwnedFd) {
+        self.sockets.insert(fd, socket);
     }
 }
 
@@ -397,62 +422,92 @@ fn reg_connect(
             {
                 return Ok(-13); // EACCES
             }
-            // Clone the socket so we can drop the lock before blocking.
-            let sock_clone = {
-                let tbl = lock(&tbl);
-                match tbl.get(fd) {
-                    Some(sock) => match sock.try_clone() {
-                        Ok(s) => s,
-                        Err(_) => return Ok(-5), // EIO
-                    },
-                    None => return Ok(-9), // EBADF
-                }
-            };
             // Cap connect duration: the guest vCPU is frozen during this
             // blocking call, so an indefinite connect hangs the whole VM.
             //
-            // On Unix SO_SNDTIMEO limits the connect timeout.  On Windows
-            // SO_SNDTIMEO only applies to send(), not connect(), so we use
-            // non-blocking connect + poll to enforce a 30 s deadline.
+            // On Unix we clone and use SO_SNDTIMEO to limit the connect.
+            // On Windows SO_SNDTIMEO only applies to send(), not connect(),
+            // so we use non-blocking connect + poll on a 30 s deadline.
+            //
+            // Windows: we connect on the *actual* socket (not a clone)
+            // because WSADuplicateSocket connection state isn't fully
+            // visible across handles — shutdown() on the original handle
+            // returns ENOTCONN if the connect was done via a clone.  We
+            // temporarily remove the socket from the table and restore it
+            // after the connect.
             #[cfg(unix)]
             {
+                let sock_clone = {
+                    let tbl = lock(&tbl);
+                    match tbl.get(fd) {
+                        Some(sock) => match sock.try_clone() {
+                            Ok(s) => s,
+                            Err(_) => return Ok(-5), // EIO
+                        },
+                        None => return Ok(-9), // EBADF
+                    }
+                };
                 let _ = sockopt::set_socket_timeout(
                     &sock_clone,
                     sockopt::Timeout::Send,
                     Some(Duration::from_secs(30)),
                 );
+                Ok(match rnet::connect(&sock_clone, &sa) {
+                    Ok(()) => 0,
+                    Err(e) => -errno_to_linux(e),
+                })
             }
             #[cfg(windows)]
-            set_nonblocking(&sock_clone);
-
-            // Lock is released — safe to block on connect.
-            Ok(match rnet::connect(&sock_clone, &sa) {
-                Ok(()) => 0,
-                // Non-blocking connect in progress — poll until writable
-                // (connected) or the 30 s deadline expires.
-                Err(e)
-                    if e == Errno::INPROGRESS || e == Errno::WOULDBLOCK || e == Errno::ALREADY =>
-                {
-                    let mut pfd = [PollFd::new(&sock_clone, PollFlags::OUT)];
-                    let timeout = Timespec {
-                        tv_sec: 30,
-                        tv_nsec: 0,
-                    };
-                    match poll(&mut pfd, Some(&timeout)) {
-                        Ok(n) if n > 0 => {
-                            // POLLOUT fired — check SO_ERROR for the real result.
-                            match sockopt::socket_error(&sock_clone) {
-                                Ok(Ok(())) => 0,
-                                Ok(Err(e)) => -errno_to_linux(e),
-                                Err(e) => -errno_to_linux(e),
-                            }
-                        }
-                        // Timeout or error — report ETIMEDOUT.
-                        _ => -110,
+            {
+                // Remove the socket so we can drop the lock while blocking.
+                let sock = {
+                    let mut tbl = lock(&tbl);
+                    match tbl.remove(fd) {
+                        Some(s) => s,
+                        None => return Ok(-9), // EBADF
                     }
+                };
+                let _ = set_nonblocking(&sock);
+
+                let result = match rnet::connect(&sock, &sa) {
+                    Ok(()) => 0,
+                    // Non-blocking connect in progress — poll until writable
+                    // (connected) or the 30 s deadline expires.
+                    Err(e)
+                        if e == Errno::INPROGRESS
+                            || e == Errno::WOULDBLOCK
+                            || e == Errno::ALREADY =>
+                    {
+                        let mut pfd = [PollFd::new(&sock, PollFlags::OUT)];
+                        let timeout = Timespec {
+                            tv_sec: 30,
+                            tv_nsec: 0,
+                        };
+                        match poll(&mut pfd, Some(&timeout)) {
+                            Ok(n) if n > 0 => {
+                                // POLLOUT fired — check SO_ERROR for the
+                                // real result.
+                                match sockopt::socket_error(&sock) {
+                                    Ok(Ok(())) => 0,
+                                    Ok(Err(e)) => -errno_to_linux(e),
+                                    Err(e) => -errno_to_linux(e),
+                                }
+                            }
+                            // Timeout or error — report ETIMEDOUT.
+                            _ => -110,
+                        }
+                    }
+                    Err(e) => -errno_to_linux(e),
+                };
+
+                // Restore blocking mode and put the socket back.
+                let _ = set_blocking(&sock);
+                {
+                    let mut tbl = lock(&tbl);
+                    tbl.replace(fd, sock);
                 }
-                Err(e) => -errno_to_linux(e),
-            })
+                Ok(result)
+            }
         },
     )
 }
