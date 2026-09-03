@@ -38,6 +38,32 @@ use crate::net_policy::{self, ListenPorts, NetworkPolicy};
 
 const MAX_SOCKETS: usize = 1024;
 
+/// Set a socket to non-blocking mode on Windows.
+///
+/// On Unix this is handled via `SocketFlags::NONBLOCK` at creation time.
+/// On Windows the flag doesn't exist on `socket()`; we use
+/// `ioctlsocket(FIONBIO)` after creation instead.
+#[cfg(windows)]
+fn set_nonblocking(fd: &OwnedFd) -> rustix::io::Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    // SAFETY: FIONBIO with a pointer to a u32 is a well-defined Winsock
+    // ioctl.  The raw socket is valid for the lifetime of `fd`.
+    let rc = unsafe {
+        windows_sys::Win32::Networking::WinSock::ioctlsocket(
+            fd.as_raw_socket() as _,
+            windows_sys::Win32::Networking::WinSock::FIONBIO as _,
+            &mut 1u32,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(Errno::from_raw_os_error(unsafe {
+            windows_sys::Win32::Networking::WinSock::WSAGetLastError()
+        }))
+    }
+}
+
 // ── Linux errno values ──────────────────────────────────────────────
 //
 // The guest is a Linux unikernel (Unikraft) and expects POSIX errno
@@ -58,6 +84,11 @@ fn errno_to_linux(e: Errno) -> i32 {
         Errno::IO => 5,
         Errno::BADF => 9,
         Errno::AGAIN => 11,
+        // On Windows EWOULDBLOCK (140) != EAGAIN (11); on Linux they
+        // are the same value (11).  Map both to Linux EAGAIN so that
+        // the guest retry loop handles non-blocking I/O correctly.
+        #[cfg(windows)]
+        Errno::WOULDBLOCK => 11,
         Errno::ACCESS => 13,
         Errno::FAULT => 14,
         Errno::INVAL => 22,
@@ -198,18 +229,28 @@ fn reg_socket(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
 
             // Create the socket.  On Unix we pass CLOEXEC and, if the
             // guest requested it, NONBLOCK directly via socket_with().
-            // On Windows these flags don't exist; sockets are inherently
-            // non-inheritable and NONBLOCK is set via ioctlsocket later.
+            // On Windows, sockets are inherently non-inheritable;
+            // NONBLOCK is set via ioctlsocket after creation.
+            let nonblock = ty & 0x800 != 0;
+
             #[cfg(unix)]
             let sock_result = {
                 let mut flags = SocketFlags::CLOEXEC;
-                if ty & 0x800 != 0 {
+                if nonblock {
                     flags |= SocketFlags::NONBLOCK;
                 }
                 rnet::socket_with(domain, sock_type, flags, protocol)
             };
             #[cfg(not(unix))]
-            let sock_result = rnet::socket(domain, sock_type, protocol);
+            let sock_result = rnet::socket(domain, sock_type, protocol).and_then(|sock| {
+                if nonblock {
+                    // Match the Linux SOCK_NONBLOCK behaviour so that the
+                    // hostsock cooperative scheduler can poll without
+                    // blocking the vCPU.
+                    set_nonblocking(&sock)?;
+                }
+                Ok(sock)
+            });
             match sock_result {
                 Ok(sock) => {
                     // Increase socket buffer sizes for TCP to match Linux
@@ -310,6 +351,8 @@ fn reg_accept(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
                 }
             };
             // Lock is released — safe to block on accept.
+            #[cfg(windows)]
+            let _ = set_nonblocking(&listener);
             let (new_sock, peer) = match rnet::acceptfrom(&listener) {
                 Ok(pair) => pair,
                 Err(e) => return Ok(errno_vec(e)),
@@ -367,21 +410,46 @@ fn reg_connect(
             };
             // Cap connect duration: the guest vCPU is frozen during this
             // blocking call, so an indefinite connect hangs the whole VM.
-            // SO_SNDTIMEO limits the connect timeout on Linux; Windows
-            // uses its own ~21 s TCP retransmission timeout regardless.
-            let _ = sockopt::set_socket_timeout(
-                &sock_clone,
-                sockopt::Timeout::Send,
-                Some(Duration::from_secs(30)),
-            );
+            //
+            // On Unix SO_SNDTIMEO limits the connect timeout.  On Windows
+            // SO_SNDTIMEO only applies to send(), not connect(), so we use
+            // non-blocking connect + poll to enforce a 30 s deadline.
+            #[cfg(unix)]
+            {
+                let _ = sockopt::set_socket_timeout(
+                    &sock_clone,
+                    sockopt::Timeout::Send,
+                    Some(Duration::from_secs(30)),
+                );
+            }
+            #[cfg(windows)]
+            set_nonblocking(&sock_clone);
+
             // Lock is released — safe to block on connect.
             Ok(match rnet::connect(&sock_clone, &sa) {
                 Ok(()) => 0,
-                // Non-blocking connect in progress — treat as success.
+                // Non-blocking connect in progress — poll until writable
+                // (connected) or the 30 s deadline expires.
                 Err(e)
                     if e == Errno::INPROGRESS || e == Errno::WOULDBLOCK || e == Errno::ALREADY =>
                 {
-                    0
+                    let mut pfd = [PollFd::new(&sock_clone, PollFlags::OUT)];
+                    let timeout = Timespec {
+                        tv_sec: 30,
+                        tv_nsec: 0,
+                    };
+                    match poll(&mut pfd, Some(&timeout)) {
+                        Ok(n) if n > 0 => {
+                            // POLLOUT fired — check SO_ERROR for the real result.
+                            match sockopt::socket_error(&sock_clone) {
+                                Ok(Ok(())) => 0,
+                                Ok(Err(e)) => -errno_to_linux(e),
+                                Err(e) => -errno_to_linux(e),
+                            }
+                        }
+                        // Timeout or error — report ETIMEDOUT.
+                        _ => -110,
+                    }
                 }
                 Err(e) => -errno_to_linux(e),
             })
@@ -407,6 +475,11 @@ fn reg_send(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
                 }
             };
             // Lock is released — safe to block on send.
+            // On Windows, set the clone non-blocking: WSADuplicateSocket
+            // doesn't preserve FIONBIO, so the clone defaults to
+            // blocking which could hang the vCPU.
+            #[cfg(windows)]
+            let _ = set_nonblocking(&sock_clone);
             Ok(match rnet::send(&sock_clone, &data, SendFlags::empty()) {
                 Ok(n) => n as i32,
                 Err(e) => -errno_to_linux(e),
@@ -453,6 +526,8 @@ fn reg_sendto(
                 }
             };
             // Lock is released — safe to block on sendto.
+            #[cfg(windows)]
+            let _ = set_nonblocking(&sock_clone);
             Ok(
                 match rnet::sendto(&sock_clone, &data, SendFlags::empty(), &sa) {
                     Ok(n) => n as i32,
@@ -501,11 +576,17 @@ fn reg_recvfrom(
             // primary path on Windows — the source address is only
             // meaningful for UDP, and the guest can use getpeername()
             // when it needs the peer address.
+            //
+            // The clone must be non-blocking: WSADuplicateSocket does
+            // NOT preserve the FIONBIO flag, so clones default to
+            // blocking.  A blocking recv on a clone would hang the vCPU
+            // if no data is immediately available.
             #[cfg(windows)]
             let recv_result: Result<
                 (Vec<u8>, usize, Option<std::net::SocketAddr>),
                 Errno,
             > = {
+                let _ = set_nonblocking(&sock_clone);
                 let mut buf = vec![MaybeUninit::uninit(); len];
                 match rnet::recv(&sock_clone, &mut buf[..], RecvFlags::empty()) {
                     Ok(((init_data, _), n)) => {
