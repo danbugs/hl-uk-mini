@@ -30,7 +30,9 @@ use hyperlight_host::func::Registerable;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fd::OwnedFd;
 use rustix::io::Errno;
-use rustix::net::{self as rnet, AddressFamily, RecvFlags, SendFlags, SocketType, sockopt};
+use rustix::net::{
+    self as rnet, AddressFamily, RecvFlags, SendFlags, SocketFlags, SocketType, sockopt,
+};
 
 use crate::net_policy::{self, ListenPorts, NetworkPolicy};
 
@@ -182,16 +184,23 @@ fn reg_socket(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
                 _ => return Ok(-93), // EPROTONOSUPPORT
             };
 
-            match rnet::socket(domain, sock_type, protocol) {
+            // Preserve SOCK_NONBLOCK and SOCK_CLOEXEC from the guest.
+            // socket2 always added CLOEXEC; NONBLOCK is needed by musl's
+            // DNS resolver and other non-blocking I/O paths.
+            let mut flags = SocketFlags::CLOEXEC;
+            if ty & 0x800 != 0 {
+                flags |= SocketFlags::NONBLOCK;
+            }
+            match rnet::socket_with(domain, sock_type, flags, protocol) {
                 Ok(sock) => {
-                    // Increase socket buffer sizes to match Linux auto-tuning
-                    // defaults.  The guest uses cooperative threading (single
-                    // vCPU), so a blocking send() pauses the entire VM.  Small
-                    // default buffers (8 KB send on Windows) can cause
-                    // deadlocks when the payload exceeds the combined buffer
-                    // space.  256 KB per direction matches Linux defaults.
-                    let _ = sockopt::set_socket_send_buffer_size(&sock, 256 * 1024);
-                    let _ = sockopt::set_socket_recv_buffer_size(&sock, 256 * 1024);
+                    // Increase socket buffer sizes for TCP to match Linux
+                    // auto-tuning defaults.  256 KB per direction avoids
+                    // deadlocks when large payloads fill small default buffers
+                    // (e.g. 8 KB send on Windows) during cooperative threading.
+                    if sock_type == SocketType::STREAM {
+                        let _ = sockopt::set_socket_send_buffer_size(&sock, 256 * 1024);
+                        let _ = sockopt::set_socket_recv_buffer_size(&sock, 256 * 1024);
+                    }
 
                     let mut tbl = lock(&tbl);
                     match tbl.insert(sock) {
@@ -326,24 +335,28 @@ fn reg_connect(
             {
                 return Ok(-13); // EACCES
             }
-            let tbl = lock(&tbl);
-            match tbl.get(fd) {
-                Some(sock) => Ok(match rnet::connect(sock, &sa) {
-                    Ok(()) => 0,
-                    // Non-blocking connect in progress — treat as success.
-                    // rustix maps WSAEWOULDBLOCK and WSAEINPROGRESS to
-                    // Errno::WOULDBLOCK and Errno::INPROGRESS respectively.
-                    Err(e)
-                        if e == Errno::INPROGRESS
-                            || e == Errno::WOULDBLOCK
-                            || e == Errno::ALREADY =>
-                    {
-                        0
-                    }
-                    Err(e) => -errno_to_linux(e),
-                }),
-                None => Ok(-9), // EBADF
-            }
+            // Clone the socket so we can drop the lock before blocking.
+            let sock_clone = {
+                let tbl = lock(&tbl);
+                match tbl.get(fd) {
+                    Some(sock) => match sock.try_clone() {
+                        Ok(s) => s,
+                        Err(_) => return Ok(-5), // EIO
+                    },
+                    None => return Ok(-9), // EBADF
+                }
+            };
+            // Lock is released — safe to block on connect.
+            Ok(match rnet::connect(&sock_clone, &sa) {
+                Ok(()) => 0,
+                // Non-blocking connect in progress — treat as success.
+                Err(e)
+                    if e == Errno::INPROGRESS || e == Errno::WOULDBLOCK || e == Errno::ALREADY =>
+                {
+                    0
+                }
+                Err(e) => -errno_to_linux(e),
+            })
         },
     )
 }
@@ -354,14 +367,22 @@ fn reg_send(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Result
     t.register_host_function(
         "net_send",
         move |fd: i32, data: Vec<u8>| -> hyperlight_host::Result<i32> {
-            let tbl = lock(&tbl);
-            match tbl.get(fd) {
-                Some(sock) => Ok(match rnet::send(sock, &data, SendFlags::empty()) {
-                    Ok(n) => n as i32,
-                    Err(e) => -errno_to_linux(e),
-                }),
-                None => Ok(-9), // EBADF
-            }
+            // Clone the socket so we can drop the lock before blocking.
+            let sock_clone = {
+                let tbl = lock(&tbl);
+                match tbl.get(fd) {
+                    Some(sock) => match sock.try_clone() {
+                        Ok(s) => s,
+                        Err(_) => return Ok(-5), // EIO
+                    },
+                    None => return Ok(-9), // EBADF
+                }
+            };
+            // Lock is released — safe to block on send.
+            Ok(match rnet::send(&sock_clone, &data, SendFlags::empty()) {
+                Ok(n) => n as i32,
+                Err(e) => -errno_to_linux(e),
+            })
         },
     )
 }
@@ -392,14 +413,24 @@ fn reg_sendto(
             {
                 return Ok(-13); // EACCES
             }
-            let tbl = lock(&tbl);
-            match tbl.get(fd) {
-                Some(sock) => Ok(match rnet::sendto(sock, &data, SendFlags::empty(), &sa) {
+            // Clone the socket so we can drop the lock before blocking.
+            let sock_clone = {
+                let tbl = lock(&tbl);
+                match tbl.get(fd) {
+                    Some(sock) => match sock.try_clone() {
+                        Ok(s) => s,
+                        Err(_) => return Ok(-5), // EIO
+                    },
+                    None => return Ok(-9), // EBADF
+                }
+            };
+            // Lock is released — safe to block on sendto.
+            Ok(
+                match rnet::sendto(&sock_clone, &data, SendFlags::empty(), &sa) {
                     Ok(n) => n as i32,
                     Err(e) => -errno_to_linux(e),
-                }),
-                None => Ok(-9), // EBADF
-            }
+                },
+            )
         },
     )
 }
@@ -800,8 +831,34 @@ fn get_sockopt(sock: &OwnedFd, level: i32, optname: i32) -> i32 {
         }
         // IPPROTO_TCP options
         (LINUX_IPPROTO_TCP, 1) => bool_to_i32(sockopt::tcp_nodelay(sock)), // TCP_NODELAY
-        // Unknown option
-        _ => -92, // ENOPROTOOPT
+        // Fall through to raw getsockopt for anything we don't wrap.
+        _ => {
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                let mut val: i32 = 0;
+                let mut len = std::mem::size_of::<i32>() as libc::socklen_t;
+                let ret = unsafe {
+                    libc::getsockopt(
+                        sock.as_raw_fd(),
+                        level,
+                        optname,
+                        &mut val as *mut i32 as *mut libc::c_void,
+                        &mut len,
+                    )
+                };
+                if ret < 0 {
+                    let e = std::io::Error::last_os_error();
+                    -(e.raw_os_error().unwrap_or(5))
+                } else {
+                    val
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                -92 // ENOPROTOOPT on Windows
+            }
+        }
     }
 }
 
@@ -852,9 +909,32 @@ fn set_sockopt(sock: &OwnedFd, level: i32, optname: i32, value: i32) -> i32 {
         }
         // IPPROTO_TCP options
         (LINUX_IPPROTO_TCP, 1) => sockopt::set_tcp_nodelay(sock, value != 0), // TCP_NODELAY
-        // Unsupported — including SO_DEBUG (1), SO_DONTROUTE (5),
-        // SO_TYPE (3, read-only), SO_ERROR (4, read-only).
-        _ => return -92, // ENOPROTOOPT
+        // Fall through to raw setsockopt for any option we don't have
+        // a typed rustix wrapper for.  This keeps compatibility with
+        // options like IP_RECVERR that musl's DNS resolver requires.
+        _ => {
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                let ret = unsafe {
+                    libc::setsockopt(
+                        sock.as_raw_fd(),
+                        level,
+                        optname,
+                        &value as *const i32 as *const libc::c_void,
+                        std::mem::size_of::<i32>() as libc::socklen_t,
+                    )
+                };
+                return if ret < 0 {
+                    let e = std::io::Error::last_os_error();
+                    -(e.raw_os_error().unwrap_or(5))
+                } else {
+                    0
+                };
+            }
+            #[cfg(not(unix))]
+            return 0; // best-effort: ignore unknown options on Windows
+        }
     };
     match res {
         Ok(()) => 0,
