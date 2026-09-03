@@ -30,9 +30,9 @@ use hyperlight_host::func::Registerable;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fd::OwnedFd;
 use rustix::io::Errno;
-use rustix::net::{
-    self as rnet, AddressFamily, RecvFlags, SendFlags, SocketFlags, SocketType, sockopt,
-};
+#[cfg(unix)]
+use rustix::net::SocketFlags;
+use rustix::net::{self as rnet, AddressFamily, RecvFlags, SendFlags, SocketType, sockopt};
 
 use crate::net_policy::{self, ListenPorts, NetworkPolicy};
 
@@ -184,14 +184,21 @@ fn reg_socket(t: &mut impl Registerable, table: &Table) -> hyperlight_host::Resu
                 _ => return Ok(-93), // EPROTONOSUPPORT
             };
 
-            // Preserve SOCK_NONBLOCK and SOCK_CLOEXEC from the guest.
-            // socket2 always added CLOEXEC; NONBLOCK is needed by musl's
-            // DNS resolver and other non-blocking I/O paths.
-            let mut flags = SocketFlags::CLOEXEC;
-            if ty & 0x800 != 0 {
-                flags |= SocketFlags::NONBLOCK;
-            }
-            match rnet::socket_with(domain, sock_type, flags, protocol) {
+            // Create the socket.  On Unix we pass CLOEXEC and, if the
+            // guest requested it, NONBLOCK directly via socket_with().
+            // On Windows these flags don't exist; sockets are inherently
+            // non-inheritable and NONBLOCK is set via ioctlsocket later.
+            #[cfg(unix)]
+            let sock_result = {
+                let mut flags = SocketFlags::CLOEXEC;
+                if ty & 0x800 != 0 {
+                    flags |= SocketFlags::NONBLOCK;
+                }
+                rnet::socket_with(domain, sock_type, flags, protocol)
+            };
+            #[cfg(not(unix))]
+            let sock_result = rnet::socket(domain, sock_type, protocol);
+            match sock_result {
                 Ok(sock) => {
                     // Increase socket buffer sizes for TCP to match Linux
                     // auto-tuning defaults.  256 KB per direction avoids
