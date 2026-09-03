@@ -365,6 +365,15 @@ fn reg_connect(
                     None => return Ok(-9), // EBADF
                 }
             };
+            // Cap connect duration: the guest vCPU is frozen during this
+            // blocking call, so an indefinite connect hangs the whole VM.
+            // SO_SNDTIMEO limits the connect timeout on Linux; Windows
+            // uses its own ~21 s TCP retransmission timeout regardless.
+            let _ = sockopt::set_socket_timeout(
+                &sock_clone,
+                sockopt::Timeout::Send,
+                Some(Duration::from_secs(30)),
+            );
             // Lock is released — safe to block on connect.
             Ok(match rnet::connect(&sock_clone, &sa) {
                 Ok(()) => 0,

@@ -30,6 +30,10 @@ COPY --from=build /usr/lib/x86_64-linux-gnu/libnss_dns.so.2  /usr/lib/x86_64-lin
 COPY --from=build /usr/lib/x86_64-linux-gnu/libnss_files.so.2 /usr/lib/x86_64-linux-gnu/libnss_files.so.2
 COPY --from=build /usr/lib/x86_64-linux-gnu/libresolv.so.2   /usr/lib/x86_64-linux-gnu/libresolv.so.2
 
+# DNS configuration — glibc defaults to nameserver 127.0.0.1 without this,
+# which fails on hosts without a local DNS server (e.g. Windows CI).
+COPY drivers/resolv.conf /etc/resolv.conf
+
 # Python interpreter binary (keep at /usr/local/bin so RPATH ../lib resolves)
 COPY --from=build /usr/local/bin/python3.12 /usr/local/bin/python3
 

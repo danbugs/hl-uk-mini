@@ -99,6 +99,10 @@ COPY --from=build /usr/lib/x86_64-linux-gnu/libnss_dns.so.2  /usr/lib/x86_64-lin
 COPY --from=build /usr/lib/x86_64-linux-gnu/libnss_files.so.2 /usr/lib/x86_64-linux-gnu/libnss_files.so.2
 COPY --from=build /usr/lib/x86_64-linux-gnu/libresolv.so.2   /usr/lib/x86_64-linux-gnu/libresolv.so.2
 
+# DNS configuration — glibc defaults to nameserver 127.0.0.1 without this,
+# which fails on hosts without a local DNS server (e.g. Windows CI).
+COPY drivers/resolv.conf /etc/resolv.conf
+
 # SSL libraries — enables pip install over --net
 COPY --from=build /lib/x86_64-linux-gnu/libssl.so.3 /lib/x86_64-linux-gnu/libssl.so.3
 COPY --from=build /lib/x86_64-linux-gnu/libcrypto.so.3 /lib/x86_64-linux-gnu/libcrypto.so.3

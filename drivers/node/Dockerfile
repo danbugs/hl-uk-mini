@@ -25,5 +25,9 @@ COPY --from=build /usr/local/bin/node /usr/bin/node
 # Hyperlight driver
 COPY --from=build /hl_nodedriver /usr/local/bin/hl_nodedriver
 
+# DNS configuration — musl defaults to nameserver 127.0.0.1 without this,
+# which fails on hosts without a local DNS server (e.g. Windows CI).
+COPY drivers/resolv.conf /etc/resolv.conf
+
 # /tmp needed for bootstrap JS at runtime
 COPY --from=build /tmp /tmp
