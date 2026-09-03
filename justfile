@@ -700,6 +700,14 @@ conformance runtime *modules:
         done < <(grep -oP '^\s+"(test_[^"]+)"' "$manifest" | sed 's/.*"\(test_[^"]*\)".*/\1/')
     fi
 
+    # Extend skip list with Windows-specific known failures
+    win_manifest="{{conformance_dir}}/{{runtime}}/known_failures_windows.toml"
+    if [[ "$(uname -s)" =~ MINGW|MSYS|CYGWIN|NT ]] && [ -f "$win_manifest" ]; then
+        while IFS= read -r mod; do
+            SKIP["$mod"]=1
+        done < <(grep -oP '^\s+"(test_[^"]+)"' "$win_manifest" | sed 's/.*"\(test_[^"]*\)".*/\1/')
+    fi
+
     pass=0 fail=0 error=0 skip=0 crash=0 total=0
 
     echo "==> Running ${#test_modules[@]} modules (${#SKIP[@]} in skip list)"

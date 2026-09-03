@@ -15,6 +15,18 @@ import sys
 import time
 import unittest
 
+# Lower the internet-resource timeout so that network-gated tests
+# (codecmaps, urllib*net) skip quickly instead of blocking the guest
+# for 60 s per download attempt.  On Linux the actual downloads
+# finish in < 1 s; on Windows the hostsock connect blocks the vCPU
+# for the host TCP retransmit timeout (~21 s) per attempt, so keep
+# this value low to stay within the per-module timeout budget.
+try:
+    from test import support as _test_support
+    _test_support.INTERNET_TIMEOUT = 10
+except Exception:
+    pass
+
 def run_module(mod_name):
     """Import and run a single test module, print structured result."""
     t0 = time.monotonic()

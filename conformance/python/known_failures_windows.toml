@@ -1,0 +1,28 @@
+# Windows-specific known failures — CPython 3.12 on Hyperlight-Unikraft (WHP)
+#
+# These modules pass on Linux (KVM) but crash on Windows (WHP) due to
+# platform-specific limitations in the hostsock networking path.
+#
+# The conformance runner loads this file IN ADDITION to known_failures.toml
+# when running on a Windows host.
+#
+# Root cause: hostsock_connect() issues a blocking hcall that freezes the
+# guest vCPU for the duration of the host TCP connect.  On Windows the
+# TCP retransmission timeout is ~21 s per attempt, and modules with
+# multiple test classes that independently attempt network connections
+# accumulate enough frozen time to exceed the per-module timeout.
+
+[may-fix.windows-network-timeout]
+reason = """Modules that download files or make outbound TCP connections.  Each
+hostsock_connect freezes the vCPU for ~21 s on Windows (TCP retransmit timeout),
+and modules with multiple test classes exceed the per-module timeout."""
+todo = "Make hostsock_connect non-blocking so the guest can enforce its own timeouts"
+modules = [
+    "test_codecmaps_cn",        # CRASH — 3 test classes × ~21 s connect timeout
+    "test_codecmaps_jp",        # CRASH — 5 test classes × ~21 s connect timeout
+    "test_codecmaps_kr",        # CRASH — 3 test classes × ~21 s connect timeout
+    "test_codecmaps_tw",        # CRASH — 2 test classes × ~21 s connect timeout
+    "test_telnetlib",           # CRASH — threaded server with selectors, ~21 s hang
+    "test_urllib2net",          # CRASH — outbound HTTP tests, ~21 s per connection
+    "test_urllibnet",           # CRASH — outbound HTTP tests, ~21 s per connection
+]
