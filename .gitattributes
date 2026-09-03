@@ -1,0 +1,18 @@
+# Guest scripts must keep LF line endings — the Unikraft kernel and
+# BusyBox hush shell interpret \r literally, breaking shebangs, loop
+# keywords (do/done), and command arguments.
+*.sh    text eol=lf
+*.py    text eol=lf
+*.js    text eol=lf
+*.cs    text eol=lf
+*.ps1   text eol=lf
+*.go    text eol=lf
+*.c     text eol=lf
+*.cpp   text eol=lf
+*.h     text eol=lf
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
