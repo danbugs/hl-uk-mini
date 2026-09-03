@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788389383448,
+  "lastUpdate": 1788455688312,
   "repoUrl": "https://github.com/danbugs/hl-uk-mini",
   "entries": {
     "agent-slim benchmarks": [
@@ -113,6 +113,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "parallel-exec/stdlib",
             "value": 43.183,
+            "unit": "ms"
+          },
+          {
+            "name": "snapshot-size/compute",
+            "value": 111.6,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/hello",
+            "value": 111.6,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/stdlib",
+            "value": 111.6,
+            "unit": "MiB"
+          },
+          {
+            "name": "rss/compute",
+            "value": 19,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/hello",
+            "value": 17,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/stdlib",
+            "value": 19,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danilochiarlone@gmail.com",
+            "name": "danbugs",
+            "username": "danbugs"
+          },
+          "committer": {
+            "email": "danilochiarlone@gmail.com",
+            "name": "danbugs",
+            "username": "danbugs"
+          },
+          "distinct": true,
+          "id": "766bea65ee61108d87caeb8ddeac082b8e3e6735",
+          "message": "ci: add Windows build and unit-test job\n\nCompiles for Windows and runs the host-side unit tests (socket layer over\nWinSock, errno translation).  Guest tests need rootfs images built on\nLinux and are not run on Windows CI yet.\n\nSigned-off-by: danbugs <danilochiarlone@gmail.com>",
+          "timestamp": "2026-09-03T17:08:20Z",
+          "tree_id": "022c836ccdfb8e8484170181b97163eacee4f707",
+          "url": "https://github.com/danbugs/hl-uk-mini/commit/766bea65ee61108d87caeb8ddeac082b8e3e6735"
+        },
+        "date": 1788455687334,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cold/compute",
+            "value": 579.499,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/hello",
+            "value": 569.063,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/stdlib",
+            "value": 575.793,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/compute",
+            "value": 16.206,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/hello",
+            "value": 9.468,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/stdlib",
+            "value": 29.79,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/compute",
+            "value": 14.899,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/hello",
+            "value": 7.022,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/stdlib",
+            "value": 29.57,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/compute",
+            "value": 1.083,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/hello",
+            "value": 0.818,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/stdlib",
+            "value": 1.189,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/compute",
+            "value": 2.371,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/hello",
+            "value": 0.111,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/stdlib",
+            "value": 10.133,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/compute",
+            "value": 20.153,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/hello",
+            "value": 11.231,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/stdlib",
+            "value": 42.459,
             "unit": "ms"
           },
           {
