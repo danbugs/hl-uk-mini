@@ -172,8 +172,9 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             # Single-partition mode allows only one WHP VM at a time,
-            # so tests must run serially.
-            cargo test --all-targets --locked -- --test-threads=1
+            # so tests must run serially.  --no-fail-fast ensures all
+            # test binaries run even if one has failures.
+            cargo test --all-targets --locked --no-fail-fast -- --test-threads=1
           else
             cargo test --all-targets --locked
           fi

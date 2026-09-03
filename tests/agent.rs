@@ -100,6 +100,9 @@ fn agent_snapshot_round_trip() {
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
+    // Drop the save sandbox before restore — with HYPERLIGHT_MAX_SURROGATES=0
+    // only one WHP VM can exist at a time.
+    drop(sandbox);
 
     // Restore + run hello.py from snapshot
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
@@ -264,6 +267,7 @@ fn agent_slim_snapshot_round_trip() {
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
+    drop(sandbox);
 
     // Restore + run hello.py from snapshot
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
