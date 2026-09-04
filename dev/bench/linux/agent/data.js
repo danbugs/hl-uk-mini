@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788456544669,
+  "lastUpdate": 1788480226689,
   "repoUrl": "https://github.com/danbugs/hl-uk-mini",
   "entries": {
     "agent benchmarks": [
@@ -287,6 +287,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "rss/stdlib",
             "value": 28,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danilochiarlone@gmail.com",
+            "name": "danbugs",
+            "username": "danbugs"
+          },
+          "committer": {
+            "email": "danilochiarlone@gmail.com",
+            "name": "Dan Chiarlone",
+            "username": "danbugs"
+          },
+          "distinct": true,
+          "id": "f9d0fa22492afa5c1fe89b5e7c078e94fe3f337c",
+          "message": "bench: report resident memory on Windows\n\nThe RSS line only existed on Linux (RssAnon from /proc), so the Windows\nbench summary lacked the density metric.  Windows now reports the\nworking set from GetProcessMemoryInfo, the counter family vmm-benchmarks\nuses there: guest memory is a section mapping, which the private-commit\ncounters do not attribute to the process.  Values are comparable within\nan OS, not across them.\n\nSigned-off-by: danbugs <danilochiarlone@gmail.com>",
+          "timestamp": "2026-09-03T16:47:57-07:00",
+          "tree_id": "41a3e81cd10063e2f8bcb277811c8986702a359f",
+          "url": "https://github.com/danbugs/hl-uk-mini/commit/f9d0fa22492afa5c1fe89b5e7c078e94fe3f337c"
+        },
+        "date": 1788480226065,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cold/compute",
+            "value": 7737.264,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/hello",
+            "value": 7674.931,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/stdlib",
+            "value": 7569.271,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/compute",
+            "value": 20.873,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/hello",
+            "value": 11.06,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/stdlib",
+            "value": 48.857,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/compute",
+            "value": 18.664,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/hello",
+            "value": 8.908,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/stdlib",
+            "value": 46.347,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/compute",
+            "value": 2.042,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/hello",
+            "value": 1.711,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/stdlib",
+            "value": 2.909,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/compute",
+            "value": 2.567,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/hello",
+            "value": 0.152,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/stdlib",
+            "value": 10.94,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/compute",
+            "value": 28.328,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/hello",
+            "value": 13.725,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/stdlib",
+            "value": 67.091,
+            "unit": "ms"
+          },
+          {
+            "name": "snapshot-size/compute",
+            "value": 876.4,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/hello",
+            "value": 876.4,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/stdlib",
+            "value": 876.4,
+            "unit": "MiB"
+          },
+          {
+            "name": "rss/compute",
+            "value": 28,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/hello",
+            "value": 26,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/stdlib",
+            "value": 30,
             "unit": "MB"
           }
         ]
