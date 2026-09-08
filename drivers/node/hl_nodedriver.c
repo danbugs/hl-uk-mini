@@ -92,6 +92,32 @@ static int node_dispatch(const uint8_t *fc, size_t fc_len)
 	if (!code)
 		return -1;
 
+	/* Guest command (--guest-exec / autonomous): the command is written to a
+	 * temp file and a fixed launcher reads it, sets process.argv, and requires
+	 * the named guest module; an empty command requires /entrypoint.js. */
+	size_t gx_len = code_len;
+	const char *gx = fc_name_is(fc, fc_len, "GuestExec") ? code : NULL;
+	static const char GX_LAUNCHER[] =
+		"const fs=require('fs');\n"
+		"let _c='';try{_c=fs.readFileSync('/tmp/hl_gx','utf8').trim();}catch(e){}\n"
+		"const _a=_c.length?_c.split(/\\s+/):[];\n"
+		"if(_a.length){process.argv=['node',..._a];require(_a[0]);}\n"
+		"else if(fs.existsSync('/entrypoint.js')){require('/entrypoint.js');}\n"
+		"else{console.log('hl: no /entrypoint.js in rootfs; nothing to run');}\n";
+	if (gx) {
+		FILE *gf = fopen("/tmp/hl_gx", "w");
+		if (!gf) {
+			fprintf(stderr, "hl_nodedriver: cannot write guest cmd\n");
+			fflush(stderr);
+			return -1;
+		}
+		if (gx_len)
+			fwrite(gx, 1, gx_len, gf);
+		fclose(gf);
+		code = GX_LAUNCHER;
+		code_len = sizeof(GX_LAUNCHER) - 1;
+	}
+
 	/* Send length (8 bytes LE) + env prefix + code to the child */
 	uint64_t len64 = (uint64_t)(eb.pos + code_len);
 	if (write(g_pipe_to_node, &len64, 8) != 8) {

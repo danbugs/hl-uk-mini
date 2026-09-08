@@ -13,6 +13,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 /* ── FlatBuffer primitives ─────────────────────────────────────── */
 
@@ -96,6 +97,69 @@ static inline const char *fc_arg0_string(const uint8_t *fc, size_t fc_len,
 
 	*out_len = slen;
 	return (const char *)(fc + s + 4);
+}
+
+/* ── FunctionCall name ─────────────────────────────────────────── */
+
+/*
+ * Extract the FunctionCall's function name.  Returns a pointer into
+ * `fc` (NOT NUL-terminated) and sets *out_len, or NULL on parse error.
+ * Used to distinguish a guest command ("GuestExec") from inline code
+ * ("Exec") without an in-band payload marker.
+ */
+static inline const char *fc_function_name(const uint8_t *fc, size_t fc_len,
+					   size_t *out_len)
+{
+	if (fc_len < 8)
+		return NULL;
+
+	size_t root = 4 + fb_u32(fc, 4);
+
+	/* FunctionCall.function_name (vtable offset 4) → string */
+	size_t s = fb_follow(fc, root, 4);
+	if (!s || s + 4 > fc_len)
+		return NULL;
+
+	uint32_t slen = fb_u32(fc, s);
+	if (s + 4 + slen > fc_len)
+		return NULL;
+
+	*out_len = slen;
+	return (const char *)(fc + s + 4);
+}
+
+/* True if the FunctionCall's name equals the NUL-terminated `name`. */
+static inline int fc_name_is(const uint8_t *fc, size_t fc_len, const char *name)
+{
+	size_t n;
+	const char *fn = fc_function_name(fc, fc_len, &n);
+	return fn && n == strlen(name) && memcmp(fn, name, n) == 0;
+}
+
+/* ── Guest-exec argv split ─────────────────────────────────────── */
+
+/*
+ * Split a NUL-terminated string in place on whitespace into `argv`
+ * (NULL-terminated, capacity `max`).  Returns argc.  Naive whitespace
+ * split — matches urunc's strings.Fields on the cmdline.
+ */
+static inline int hl_split_ws(char *buf, char **argv, int max)
+{
+	int argc = 0;
+	char *p = buf;
+	while (*p && argc < max - 1) {
+		while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+			p++;
+		if (!*p)
+			break;
+		argv[argc++] = p;
+		while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
+			p++;
+		if (*p)
+			*p++ = '\0';
+	}
+	argv[argc] = NULL;
+	return argc;
 }
 
 /* ── Hex address parsing ───────────────────────────────────────── */

@@ -72,6 +72,14 @@ struct RunArgs {
     #[arg(long, conflicts_with = "script")]
     exec: Option<String>,
 
+    /// Run a command that already lives in the guest filesystem: a path plus
+    /// optional args (e.g. "/app/server --port 8080"). Unlike a script file
+    /// (read from the host) or --exec (host code), this runs a file baked into
+    /// the initrd. This is how urunc drives the guest. With no workload given,
+    /// the guest's conventional entrypoint (/entrypoint.py, /entrypoint, …) runs.
+    #[arg(long = "guest-exec", value_name = "COMMAND", conflicts_with_all = ["script", "exec"])]
+    guest_exec: Option<String>,
+
     /// Mount a host directory into the guest filesystem.
     /// Format: HOST:GUEST[:ro] (e.g. /tmp/share:/mnt or /data:/mnt/data:ro).
     #[arg(long = "mount", value_name = "HOST:GUEST[:ro]")]
@@ -157,6 +165,12 @@ struct SnapshotRunArgs {
     /// Inline code to execute (alternative to a script file).
     #[arg(long, conflicts_with = "script")]
     exec: Option<String>,
+
+    /// Run a command that already lives in the guest filesystem (path plus
+    /// optional args). With no workload given, the guest's conventional
+    /// entrypoint runs. See `hluk run --help`.
+    #[arg(long = "guest-exec", value_name = "COMMAND", conflicts_with_all = ["script", "exec"])]
+    guest_exec: Option<String>,
 
     /// Mount a host directory into the guest filesystem.
     /// Format: HOST:GUEST[:ro] (e.g. /tmp/share:/mnt or /data:/mnt/data:ro).
@@ -362,7 +376,11 @@ fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
         parse_net_policy(args.net, &args.net_allow, &args.net_block, &args.ports)
             .map_err(hyperlight_unikraft::hyperlight_host::HyperlightError::Error)?;
 
-    let exec = resolve_exec(args.script, args.exec)?;
+    // Precedence: a host script or --exec code; else a guest command
+    // (--guest-exec); else, with no workload at all, the rootfs's conventional
+    // entrypoint. The last two are the model a container runtime (urunc) uses.
+    let exec = resolve_exec(args.script, args.exec)?
+        .unwrap_or_else(|| Exec::Guest(args.guest_exec.unwrap_or_default()));
     let envs = parse_envs(&args.envs);
 
     let (usandbox, config) = create_sandbox(
@@ -382,11 +400,9 @@ fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
     let mut sandbox = init(usandbox)?;
     info!(elapsed_ms = t.elapsed().as_secs_f64() * 1000.0, "init");
 
-    if let Some(exec) = exec {
-        let t = Instant::now();
-        run(&mut sandbox, exec)?;
-        info!(elapsed_ms = t.elapsed().as_secs_f64() * 1000.0, "exec");
-    }
+    let t = Instant::now();
+    run(&mut sandbox, exec)?;
+    info!(elapsed_ms = t.elapsed().as_secs_f64() * 1000.0, "exec");
 
     Ok(())
 }
@@ -462,12 +478,13 @@ fn cmd_snapshot_run(args: SnapshotRunArgs) -> hyperlight_unikraft::hyperlight_ho
         config.set_env_vars(&envs)?;
     }
 
-    let exec = resolve_exec(args.script, args.exec)?;
-    if let Some(exec) = exec {
-        let t = Instant::now();
-        run(&mut sandbox, exec)?;
-        info!(elapsed_ms = t.elapsed().as_secs_f64() * 1000.0, "exec");
-    }
+    // Precedence: host script / --exec code; else --guest-exec; else the
+    // rootfs's conventional entrypoint.
+    let exec = resolve_exec(args.script, args.exec)?
+        .unwrap_or_else(|| Exec::Guest(args.guest_exec.unwrap_or_default()));
+    let t = Instant::now();
+    run(&mut sandbox, exec)?;
+    info!(elapsed_ms = t.elapsed().as_secs_f64() * 1000.0, "exec");
     Ok(())
 }
 

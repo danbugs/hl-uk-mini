@@ -112,6 +112,49 @@ static int dotnet_dispatch(const uint8_t *fc, size_t fc_len)
 	if (!code)
 		return -1;
 
+	/* Guest command (--guest-exec / autonomous): compile+run the named .cs
+	 * file from the initrd (the command's first token; args are not forwarded
+	 * to C# yet), or the conventional /entrypoint.cs when empty. */
+	char *auton_buf = NULL;
+	size_t gx_len = code_len;
+	const char *gx = fc_name_is(fc, fc_len, "GuestExec") ? code : NULL;
+	if (gx) {
+		char pathbuf[4096];
+		char *av[64];
+		const char *src = gx_len ? gx : "/entrypoint.cs";
+		size_t n = gx_len ? gx_len : strlen("/entrypoint.cs");
+		if (n >= sizeof(pathbuf))
+			return -1;
+		memcpy(pathbuf, src, n);
+		pathbuf[n] = '\0';
+		hl_split_ws(pathbuf, av, 64);
+		const char *cspath = av[0] ? av[0] : "/entrypoint.cs";
+		FILE *ef = fopen(cspath, "rb");
+		if (!ef) {
+			fprintf(stderr, "hl: no %s in rootfs; nothing to run\n",
+				cspath);
+			fflush(stderr);
+			return 0;
+		}
+		long sz = -1;
+		if (fseek(ef, 0, SEEK_END) == 0)
+			sz = ftell(ef);
+		if (sz < 0 || fseek(ef, 0, SEEK_SET) != 0) {
+			fclose(ef);
+			return -1;
+		}
+		auton_buf = malloc((size_t)sz + 1);
+		if (!auton_buf) {
+			fclose(ef);
+			return -1;
+		}
+		size_t rd = fread(auton_buf, 1, (size_t)sz, ef);
+		fclose(ef);
+		auton_buf[rd] = '\0';
+		code = auton_buf;
+		code_len = rd;
+	}
+
 	/* Build env var prefix for the compiled C# code.
 	 * Also refreshes glibc environ (for the parent process). */
 	char env_prefix[4096];
@@ -119,10 +162,12 @@ static int dotnet_dispatch(const uint8_t *fc, size_t fc_len)
 	hl_env_refresh(dotnet_env_visitor, &db);
 	env_prefix[db.pos] = '\0';
 
+	int rc = -1;
+
 	/* Send length (8 bytes LE) + env prefix + code to the child */
 	uint64_t len64 = (uint64_t)(db.pos + code_len);
 	if (write(g_pipe_to_dotnet, &len64, 8) != 8)
-		return -1;
+		goto out;
 	/* Write env prefix first, then the user code */
 	if (db.pos > 0) {
 		const char *ep = env_prefix;
@@ -130,7 +175,7 @@ static int dotnet_dispatch(const uint8_t *fc, size_t fc_len)
 		while (erem > 0) {
 			ssize_t n = write(g_pipe_to_dotnet, ep, erem);
 			if (n <= 0)
-				return -1;
+				goto out;
 			ep += n;
 			erem -= n;
 		}
@@ -140,7 +185,7 @@ static int dotnet_dispatch(const uint8_t *fc, size_t fc_len)
 	while (remaining > 0) {
 		ssize_t n = write(g_pipe_to_dotnet, p, remaining);
 		if (n <= 0)
-			return -1;
+			goto out;
 		p += n;
 		remaining -= n;
 	}
@@ -150,8 +195,12 @@ static int dotnet_dispatch(const uint8_t *fc, size_t fc_len)
 	 * which switches to the child .NET thread. */
 	char ack = 1;
 	if (read(g_pipe_from_dotnet, &ack, 1) != 1)
-		return -1;
-	return ack != 0 ? -1 : 0;
+		goto out;
+	rc = ack != 0 ? -1 : 0;
+
+out:
+	free(auton_buf);
+	return rc;
 }
 
 /* ── Entry point ───────────────────────────────────────────────── */
