@@ -89,6 +89,24 @@ static int bash_dispatch(const uint8_t *fc, size_t fc_len)
 	if (!code)
 		return -1;
 
+	/* Guest command (--guest-exec / autonomous): the command is shell, so
+	 * run it as-is ("path args" executes that script with its args); an empty
+	 * command sources the conventional /entrypoint.sh. */
+	size_t gx_len = code_len;
+	const char *gx = fc_name_is(fc, fc_len, "GuestExec") ? code : NULL;
+	static const char GX_DEFAULT[] =
+		"if [ -f /entrypoint.sh ]; then . /entrypoint.sh; "
+		"else echo 'hl: no /entrypoint.sh in rootfs; nothing to run'; fi\n";
+	if (gx) {
+		if (gx_len == 0) {
+			code = GX_DEFAULT;
+			code_len = sizeof(GX_DEFAULT) - 1;
+		} else {
+			code = gx;
+			code_len = gx_len;
+		}
+	}
+
 	/* Write code to temp file — the shell sources this */
 	FILE *f = fopen("/tmp/hl_dispatch.sh", "w");
 	if (!f) {

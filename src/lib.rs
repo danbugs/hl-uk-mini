@@ -559,6 +559,18 @@ pub enum Exec {
     Code(String),
     /// Script file — read to string and passed to the guest's dispatch callback.
     File(PathBuf),
+    /// Run a command that already lives in the guest filesystem: a path plus
+    /// optional args (e.g. `"/app/server --port 8080"`). The driver runs the
+    /// named guest file with that argv — the exec driver `execv`s it, the
+    /// interpreters run it as a script with `sys.argv`/`process.argv` set.
+    ///
+    /// This is how a container runtime (urunc) drives the guest: the app is
+    /// baked into the initrd and its command comes from the image, matching
+    /// how every other urunc VMM passes the app's command line. An empty
+    /// command means "run the conventional entrypoint" (`/entrypoint.py`,
+    /// `/entrypoint`, …). Dispatched at the same point as any other `Exec`, so
+    /// it works identically on a fresh boot or a restored snapshot.
+    Guest(String),
 }
 
 impl From<&str> for Exec {
@@ -593,6 +605,10 @@ pub fn run(sandbox: &mut MultiUseSandbox, exec: impl Into<Exec>) -> hyperlight_h
             })?;
             sandbox.call::<()>("Exec", code)
         }
+        // Guest command: dispatched under a distinct function name so the
+        // driver runs the named guest file (empty command → its conventional
+        // entrypoint) rather than treating the payload as inline code.
+        Exec::Guest(cmd) => sandbox.call::<()>("GuestExec", cmd),
     }
 }
 

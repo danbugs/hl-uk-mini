@@ -40,18 +40,41 @@ static int exec_dispatch(const uint8_t *fc, size_t fc_len)
 	/* Refresh glibc environ so the exec'd child inherits host vars. */
 	hl_env_refresh(NULL, NULL);
 
-	/* Extract the command path from the FunctionCall FlatBuffer */
+	/* Extract the command from the FunctionCall FlatBuffer */
 	size_t cmd_len;
 	const char *cmd = fc_arg0_string(fc, fc_len, &cmd_len);
-	if (!cmd)
-		return -1;
 
-	/* Null-terminate */
-	char path[4096];
-	if (cmd_len >= sizeof(path))
-		return -1;
-	memcpy(path, cmd, cmd_len);
-	path[cmd_len] = '\0';
+	char cmdbuf[4096];
+	char *argv[64];
+	size_t gx_len = cmd ? cmd_len : 0;
+	const char *gx = fc_name_is(fc, fc_len, "GuestExec") ? cmd : NULL;
+	if (gx) {
+		/* Guest command: "path [args]" (empty → /entrypoint), i.e. a
+		 * --guest-exec or autonomous urunc-style run. */
+		const char *src = gx_len ? gx : "/entrypoint";
+		size_t n = gx_len ? gx_len : strlen("/entrypoint");
+		if (n >= sizeof(cmdbuf))
+			return -1;
+		memcpy(cmdbuf, src, n);
+		cmdbuf[n] = '\0';
+		hl_split_ws(cmdbuf, argv, 64);
+	} else {
+		/* Bare binary path (--exec /mnt/bin/foo). */
+		if (!cmd || cmd_len == 0 || cmd_len >= sizeof(cmdbuf))
+			return -1;
+		memcpy(cmdbuf, cmd, cmd_len);
+		cmdbuf[cmd_len] = '\0';
+		argv[0] = cmdbuf;
+		argv[1] = NULL;
+	}
+	if (!argv[0])
+		return 0;
+	if (access(argv[0], X_OK) != 0) {
+		fprintf(stderr, "hl: no executable %s in rootfs; nothing to run\n",
+			argv[0]);
+		fflush(stderr);
+		return 0;
+	}
 
 	/* Create a pipe for exit detection.  The child inherits the
 	 * write end via exec (no CLOEXEC).  When the child exits,
@@ -75,7 +98,7 @@ static int exec_dispatch(const uint8_t *fc, size_t fc_len)
 	if (pid == 0) {
 		/* Child — only exec or _exit allowed after vfork.
 		 * Both pipe ends are inherited; exec keeps them. */
-		execl(path, path, (char *)NULL);
+		execv(argv[0], argv);
 		_exit(127);
 	}
 

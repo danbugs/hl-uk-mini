@@ -47,6 +47,32 @@ static int pwsh_dispatch(const uint8_t *fc, size_t fc_len)
 	if (!code)
 		return -1;
 
+	/* Guest command (--guest-exec / autonomous): the command is written to a
+	 * temp file and a fixed launcher reads it, splits it, and invokes the
+	 * named guest script with its args; an empty command runs the conventional
+	 * /entrypoint.ps1. Uses .NET methods rather than cmdlets (Test-Path/…)
+	 * because module loading is limited in the rootfs. */
+	size_t gx_len = code_len;
+	const char *gx = fc_name_is(fc, fc_len, "GuestExec") ? code : NULL;
+	static const char GX_LAUNCHER[] =
+		"$c = [IO.File]::ReadAllText('/tmp/hl_gx').Trim()\n"
+		"if ($c) { $a = $c -split '\\s+'; if ($a.Length -gt 1) { & $a[0] @($a[1..($a.Length-1)]) } else { & $a[0] } }\n"
+		"elseif ([IO.File]::Exists('/entrypoint.ps1')) { & '/entrypoint.ps1' }\n"
+		"else { [Console]::WriteLine('hl: no /entrypoint.ps1 in rootfs; nothing to run') }\n";
+	if (gx) {
+		FILE *gf = fopen("/tmp/hl_gx", "w");
+		if (!gf) {
+			fprintf(stderr, "hl_pwshdriver: cannot write guest cmd\n");
+			fflush(stderr);
+			return -1;
+		}
+		if (gx_len)
+			fwrite(gx, 1, gx_len, gf);
+		fclose(gf);
+		code = GX_LAUNCHER;
+		code_len = sizeof(GX_LAUNCHER) - 1;
+	}
+
 	/* Write code to temp file */
 	FILE *f = fopen("/tmp/hl_dispatch.ps1", "w");
 	if (!f) {

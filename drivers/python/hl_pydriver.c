@@ -118,6 +118,38 @@ static int py_dispatch(const uint8_t *fc, size_t fc_len)
 	if (!code)
 		return -1;
 
+	/* Guest command ("GuestExec" — --guest-exec / autonomous): run the named
+	 * guest file with argv, or the conventional /entrypoint.py when empty.
+	 * The command (arg0) is handed to Python as a variable (no source
+	 * escaping) and shlex splits it into argv. */
+	size_t gx_len = code_len;
+	const char *gx = fc_name_is(fc, fc_len, "GuestExec") ? code : NULL;
+	if (gx) {
+		PyObject *mainmod = PyImport_AddModule("__main__");
+		if (mainmod) {
+			PyObject *cmdobj =
+				PyUnicode_FromStringAndSize(gx, (Py_ssize_t)gx_len);
+			if (cmdobj) {
+				PyDict_SetItemString(PyModule_GetDict(mainmod),
+						     "_HL_CMD", cmdobj);
+				Py_DECREF(cmdobj);
+			}
+		}
+		static const char LAUNCHER[] =
+			"import os, sys, shlex, runpy\n"
+			"_a = shlex.split(_HL_CMD)\n"
+			"if _a:\n"
+			"    sys.argv = _a\n"
+			"    runpy.run_path(_a[0], run_name='__main__')\n"
+			"elif os.path.exists('/entrypoint.py'):\n"
+			"    sys.argv = ['/entrypoint.py']\n"
+			"    runpy.run_path('/entrypoint.py', run_name='__main__')\n"
+			"else:\n"
+			"    print('hl: no /entrypoint.py in rootfs; nothing to run')\n";
+		code = LAUNCHER;
+		code_len = sizeof(LAUNCHER) - 1;
+	}
+
 	/* NUL-terminate — fc_arg0_string returns a non-terminated slice */
 	size_t total = prefix_len + code_len;
 	char stack_buf[4096];
