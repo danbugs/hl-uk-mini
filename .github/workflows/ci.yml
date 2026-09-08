@@ -28,6 +28,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          # hyperlight-host embeds guest binaries from target/*/build/hls via
+          # RustEmbed at compile time; keep that dir in the cache so a restore
+          # doesn't prune it (a pruned hls breaks the Windows build). The v1
+          # prefix drops the earlier caches that were saved without it.
+          prefix-key: "v1-rust"
+          cache-directories: |
+            target/debug/build/hls
+            target/release/build/hls
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo fmt
@@ -137,6 +145,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          # hyperlight-host embeds guest binaries from target/*/build/hls via
+          # RustEmbed at compile time; keep that dir in the cache so a restore
+          # doesn't prune it (a pruned hls breaks the Windows build). The v1
+          # prefix drops the earlier caches that were saved without it.
+          prefix-key: "v1-rust"
+          cache-directories: |
+            target/debug/build/hls
+            target/release/build/hls
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
@@ -188,6 +204,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          # hyperlight-host embeds guest binaries from target/*/build/hls via
+          # RustEmbed at compile time; keep that dir in the cache so a restore
+          # doesn't prune it (a pruned hls breaks the Windows build). The v1
+          # prefix drops the earlier caches that were saved without it.
+          prefix-key: "v1-rust"
+          cache-directories: |
+            target/debug/build/hls
+            target/release/build/hls
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
@@ -261,6 +285,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          # hyperlight-host embeds guest binaries from target/*/build/hls via
+          # RustEmbed at compile time; keep that dir in the cache so a restore
+          # doesn't prune it (a pruned hls breaks the Windows build). The v1
+          # prefix drops the earlier caches that were saved without it.
+          prefix-key: "v1-rust"
+          cache-directories: |
+            target/debug/build/hls
+            target/release/build/hls
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
