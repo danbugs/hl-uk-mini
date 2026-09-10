@@ -107,6 +107,32 @@ pub const HEAP_SIZE: u64 = 0x10_0000; // 1 MiB
 /// OCI tag used when saving/loading snapshots to disk.
 pub const SNAPSHOT_TAG: &str = "latest";
 
+/// MSRs the Unikraft guest reads/writes, which hyperlight 0.17.0's
+/// default-deny KVM MSR filter must permit.
+///
+/// From 0.17.0 the vCPU runs behind a KVM MSR filter that faults (#GP)
+/// on any guest rdmsr/wrmsr of an MSR the host has not declared.  The
+/// kernel needs the SYSCALL entry set so the elfloader can drop ring-3
+/// ELFs into a `syscall`, plus PAT, which the native paging init resets.
+///
+/// Both the boot path ([`create_sandbox`]) and the restore path
+/// ([`restore`]) must declare the SAME set: a snapshot persists exactly
+/// the declared MSRs and restore rejects any it cannot map back onto the
+/// restoring VM's declared set.
+const GUEST_MSRS: &[u32] = &[
+    0x277,       // IA32_PAT   — page-attribute table (paging init)
+    0xC000_0081, // IA32_STAR  — syscall CS/SS selectors
+    0xC000_0082, // IA32_LSTAR — syscall entry RIP
+    0xC000_0084, // IA32_FMASK — syscall RFLAGS mask
+];
+
+/// Declare [`GUEST_MSRS`] on a sandbox configuration.
+fn apply_guest_msrs(cfg: &mut SandboxConfiguration) -> hyperlight_host::Result<()> {
+    cfg.guest_msrs(GUEST_MSRS)
+        .map_err(|e| hyperlight_host::new_error!("declaring guest MSRs: {}", e))?;
+    Ok(())
+}
+
 // ── Windows surrogate processes ────────────────────────────────────────
 
 /// Choose how many WHP *surrogate processes* Hyperlight may use.
@@ -467,7 +493,10 @@ pub fn create_sandbox(
     cfg.set_input_data_size(IO_STACK_SIZE);
     cfg.set_output_data_size(IO_STACK_SIZE);
 
-    let mut usandbox = UninitializedSandbox::new(GuestBinary::Buffer(KERNEL), Some(cfg))?;
+    // Permit the guest to touch the MSRs the Unikraft kernel programs
+    apply_guest_msrs(&mut cfg)?;
+
+    let mut usandbox = UninitializedSandbox::new(GuestBinary::Buffer(KERNEL.to_vec()), Some(cfg))?;
 
     let (initrd_base, initrd_size) = if let Some(path) = initrd {
         let size = usandbox.map_file_cow(path, INITRD_MAP_BASE)?;
@@ -653,7 +682,20 @@ pub fn restore(
     };
     let mut hf = HostFunctions::default();
     config.register(&mut hf)?;
-    let sandbox = MultiUseSandbox::from_snapshot(snapshot, hf, None)?;
+
+    // The restoring VM must declare the same MSRs as the saving VM: the
+    // snapshot persists exactly those MSRs and restore validates them
+    // against this set (see [`GUEST_MSRS`]).  from_snapshot takes the
+    // layout sizes from the snapshot itself, so we only set the ones we
+    // know to match (avoiding a spurious layout-override warning) and let
+    // it override scratch.
+    let mut sbcfg = SandboxConfiguration::default();
+    sbcfg.set_input_data_size(IO_STACK_SIZE);
+    sbcfg.set_output_data_size(IO_STACK_SIZE);
+    sbcfg.set_heap_size(HEAP_SIZE);
+    apply_guest_msrs(&mut sbcfg)?;
+
+    let sandbox = MultiUseSandbox::from_snapshot(snapshot, hf, Some(sbcfg))?;
     Ok((sandbox, config))
 }
 

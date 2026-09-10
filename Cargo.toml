@@ -1,6 +1,6 @@
 [package]
 name = "hyperlight-unikraft"
-version = "0.1.0"
+version = "0.13.0"
 edition = "2024"
 
 [[bin]]
@@ -12,8 +12,8 @@ default = ["cli"]
 cli = ["dep:clap", "dep:tracing-subscriber"]
 
 [dependencies]
-hyperlight-common = { git = "https://github.com/hyperlight-dev/hyperlight.git", branch = "hluk" }
-hyperlight-host = { git = "https://github.com/hyperlight-dev/hyperlight.git", branch = "hluk" }
+hyperlight-common = "0.17"
+hyperlight-host = "0.17"
 tracing = "0.1"
 
 # Host I/O.  Filesystem: cap-std's `Dir` is the capability that keeps
