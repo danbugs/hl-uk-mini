@@ -7,9 +7,9 @@
 #   just run python examples/python/hello.py
 #   just clean
 #
-# TODO: add `just pull-rootfs <runtime>` to pull pre-built rootfs from registry
-# Rootfs images are built with Docker on Linux (see build-rootfs); on
-# Windows, copy the CPIOs into build-elfloader/ and use run/test/conformance.
+# Rootfs images are built with Docker on Linux (see build-rootfs); on Windows,
+# copy the CPIOs into build-elfloader/ and use run/test/conformance — or pull a
+# published image with `just pull-rootfs <runtime> <registry>` (no local build).
 
 # Windows: every recipe runs under PowerShell 7 (pwsh, https://aka.ms/pwsh),
 # which must be on PATH; recipes that need Docker or a Linux toolchain say so.
@@ -196,6 +196,17 @@ clean-kernel:
 
 # ── Rootfs ───────────────────────────────────────────────────────
 
+# Build the shared BusyBox base image (hluk-busybox), the NOMMU/PIE userland
+# used by the bash, agent and agent-slim rootfs.  Built automatically by
+# build-rootfs for those runtimes; run directly to refresh it.
+[unix]
+build-busybox:
+    docker build -t hluk-busybox -f "{{drivers_dir}}/busybox.Dockerfile" "{{root_dir}}/"
+
+[windows]
+build-busybox:
+    @Write-Error "build-busybox needs Docker on Linux."; exit 1
+
 # Build a rootfs CPIO from a driver Dockerfile.
 #
 # Standard runtimes:   just build-rootfs python
@@ -226,12 +237,32 @@ build-rootfs runtime dockerfile="":
     image="hluk-{{runtime}}-rootfs"
     output="{{build_dir}}/{{runtime}}-rootfs.cpio"
     mkdir -p "{{build_dir}}"
+    # Dependency: build the shared BusyBox base image first if this
+    # Dockerfile pulls from it (COPY --from=hluk-busybox).
+    if grep -q 'from=hluk-busybox' "$df"; then
+        just build-busybox
+    fi
     echo "==> Building image $image from $df"
     docker build -t "$image" -f "$df" "{{root_dir}}/"
-    echo "==> Exporting to $output (newc CPIO)"
+    just _export-cpio "{{runtime}}" "$image"
+
+[windows]
+build-rootfs runtime dockerfile="":
+    @Write-Error "build-rootfs needs Docker + cpio on Linux. Build there (just build-rootfs {{runtime}}) and copy build-elfloader/{{runtime}}-rootfs.cpio here."; exit 1
+
+# Export a rootfs docker image to build-elfloader/<runtime>-rootfs.cpio.
+# Used by build-rootfs after the docker build.
+[private]
+[unix]
+_export-cpio runtime image:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    output="{{build_dir}}/{{runtime}}-rootfs.cpio"
+    mkdir -p "{{build_dir}}"
+    echo "==> Exporting {{image}} to $output (newc CPIO)"
     tmpdir=$(mktemp -d)
     trap 'rm -rf "$tmpdir"' EXIT
-    cid=$(docker create --entrypoint=/ "$image" 2>/dev/null || docker create "$image")
+    cid=$(docker create --entrypoint=/ "{{image}}" 2>/dev/null || docker create "{{image}}")
     docker export "$cid" | tar -C "$tmpdir" -xf -
     docker rm "$cid" > /dev/null
     # docker export replaces /etc/hosts, /etc/resolv.conf with empty
@@ -246,9 +277,104 @@ build-rootfs runtime dockerfile="":
     (cd "$tmpdir" && find . | cpio -o -H newc --quiet > "$output")
     echo "==> Done: $output ($(du -h "$output" | cut -f1))"
 
+# Pull a published <runtime>:initrd image and drop its CPIO into build-elfloader/
+# — run a guest without building locally:
+#   just pull-rootfs python <registry>
+#   hluk run --initrd build-elfloader/python-rootfs.cpio ...
+[unix]
+pull-rootfs runtime registry:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    image="{{registry}}/{{runtime}}:initrd"
+    output="{{build_dir}}/{{runtime}}-rootfs.cpio"
+    mkdir -p "{{build_dir}}"
+    docker pull "$image"
+    cid=$(docker create --entrypoint=/ "$image" 2>/dev/null || docker create "$image" /)
+    docker cp "$cid:/initrd.cpio" "$output"
+    docker rm "$cid" >/dev/null
+    echo "==> Pulled $output ($(du -h "$output" | cut -f1))"
+
 [windows]
-build-rootfs runtime dockerfile="":
-    @Write-Error "build-rootfs needs Docker + cpio on Linux. Build there (just build-rootfs {{runtime}}) and copy build-elfloader/{{runtime}}-rootfs.cpio here."; exit 1
+pull-rootfs runtime registry:
+    @Write-Error "pull-rootfs needs Docker on Linux; pull there and copy the CPIO."; exit 1
+
+# ── Publish (GHCR) ───────────────────────────────────────────────
+#
+# Push images to <registry> (the workflow passes ghcr.io/<owner>/<repo>).  Each
+# runtime is ONE package with two tags — the same rootfs in two forms, so the
+# registry isn't cluttered with separate packages:
+#   <runtime>:latest  — the rootfs filesystem image; build a custom guest
+#                       `FROM <registry>/<runtime>`.  (+ :<version> on a tag.)
+#   <runtime>:initrd  — the runnable CPIO; `just pull-rootfs` fetches it to
+#                       `hluk run`, no local build.  (+ :initrd-<version>.)
+# Same scheme for busybox (:latest is its base; no initrd — it's build-only),
+# and the kernel / urunc "hello" images.  publish-images.yml logs in and passes
+# the version; run locally after `docker login`.  Linux-only (Docker builds).
+
+# Tag a local image into <target>:latest (+ :<version> when given) and push.
+[private]
+[unix]
+_push local target version="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    docker tag "{{local}}:latest" "{{target}}:latest"
+    docker push "{{target}}:latest"
+    if [ -n "{{version}}" ]; then
+        docker tag "{{local}}:latest" "{{target}}:{{version}}"
+        docker push "{{target}}:{{version}}"
+    fi
+
+# Build a runtime's rootfs and publish it as one package, two tags:
+# <registry>/<runtime>:latest (filesystem base, to build FROM) and
+# <registry>/<runtime>:initrd (the runnable CPIO, for pull-rootfs).
+[unix]
+publish runtime registry version="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just build-rootfs "{{runtime}}"
+    repo="{{registry}}/{{runtime}}"
+    # :latest (+ :<version>) — the rootfs filesystem image, to build FROM.
+    just _push "hluk-{{runtime}}-rootfs" "$repo" "{{version}}"
+    # :initrd (+ :initrd-<version>) — the runnable CPIO wrapped in a scratch
+    # image.  build-elfloader is in .dockerignore, so wrap from a temp context.
+    tmpctx=$(mktemp -d); trap 'rm -rf "$tmpctx"' EXIT
+    cp "{{build_dir}}/{{runtime}}-rootfs.cpio" "$tmpctx/initrd.cpio"
+    printf 'FROM scratch\nCOPY initrd.cpio /initrd.cpio\n' \
+        | docker build -q -f - -t "hluk-{{runtime}}-initrd" "$tmpctx"
+    docker tag "hluk-{{runtime}}-initrd:latest" "$repo:initrd"
+    docker push "$repo:initrd"
+    if [ -n "{{version}}" ]; then
+        docker tag "hluk-{{runtime}}-initrd:latest" "$repo:initrd-{{version}}"
+        docker push "$repo:initrd-{{version}}"
+    fi
+
+# Publish the shared BusyBox base as <registry>/busybox:latest.  busybox has no
+# driver and isn't a runnable guest, so it's base-only (no :initrd) — it's the
+# userland bash/agent/agent-slim build on.  Kept separate from `publish` (which
+# is for runtimes), alongside publish-kernel / publish-urunc.
+[unix]
+publish-busybox registry version="":
+    just build-busybox
+    just _push hluk-busybox "{{registry}}/busybox" "{{version}}"
+
+# Publish the committed kernel as <registry>/kernel (scratch image at /kernel).
+[unix]
+publish-kernel registry version="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf 'FROM scratch\nCOPY kernel/elfloader_hyperlight-x86_64 /kernel\n' \
+        | docker build -f - -t hluk-kernel "{{root_dir}}/"
+    just _push hluk-kernel "{{registry}}/kernel" "{{version}}"
+
+# Publish the urunc "hello" OCI image (see demos/urunc).
+[unix]
+publish-urunc registry version="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{root_dir}}/demos/urunc"
+    just stage
+    docker build -f Containerfile -t hluk-hello-urunc .
+    just _push hluk-hello-urunc "{{registry}}/hello-urunc" "{{version}}"
 
 # Clean rebuild of a rootfs — pulls fresh base images, no Docker cache.
 # Also nukes stale snapshots. Use when base images or drivers change.
@@ -458,6 +584,93 @@ test *args:
     $env:RUST_TEST_THREADS = '4'
     cargo test --all-targets --manifest-path "{{root_dir}}/Cargo.toml" {{args}}
     exit $LASTEXITCODE
+
+# Build the demo/example guest rootfs (the ones not covered by build-all-rootfs).
+# Their base images (python/agent-slim/node/dotnet-aot) must exist first, so run
+# `just build-all-rootfs` before this.  supply-chain reuses the python rootfs.
+[unix]
+build-demos:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just build-rootfs autonomous   "{{examples_dir}}/autonomous/Dockerfile"
+    just build-rootfs http-flask   "{{examples_dir}}/http-server/flask/Dockerfile"
+    just build-rootfs http-express "{{examples_dir}}/http-server/express/Dockerfile"
+    just build-rootfs http-kestrel "{{examples_dir}}/http-server/kestrel/Dockerfile"
+    just build-rootfs pptx         "{{root_dir}}/demos/pptx-gen/Dockerfile.rootfs"
+    just build-rootfs agent-fw-local "{{examples_dir}}/agent-framework/local.Dockerfile"
+
+[windows]
+build-demos:
+    @Write-Error "build-demos needs Docker on Linux; build there and copy the CPIOs."; exit 1
+
+# Run the demos/examples end to end: build each guest (Linux/Docker), then run
+# it under hluk and assert the output.  The run+assert half lives in the
+# cross-platform ci/run_demo.py, so the `demos` CI job runs the exact same
+# checks on Linux and Windows.  With no argument the full set runs; pass names
+# to pick, e.g. `just demos http-flask pptx`.
+#   Demos: supply-chain autonomous http-flask http-express http-kestrel pptx
+#          agent-fw-local
+[unix]
+demos *which:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just build
+    which="{{which}}"
+    [ -n "$which" ] || which="supply-chain autonomous http-flask http-express http-kestrel pptx agent-fw-local"
+    for d in $which; do
+        echo "════════════════════════════════════════════"
+        echo "  demo: $d"
+        echo "════════════════════════════════════════════"
+        case "$d" in
+        supply-chain)   just build-rootfs python ;;
+        autonomous)     just build-rootfs python; just build-rootfs autonomous "{{examples_dir}}/autonomous/Dockerfile" ;;
+        http-flask)     just build-rootfs agent-slim; just build-rootfs http-flask "{{examples_dir}}/http-server/flask/Dockerfile" ;;
+        http-express)   just build-rootfs node; just build-rootfs http-express "{{examples_dir}}/http-server/express/Dockerfile" ;;
+        http-kestrel)   just build-rootfs dotnet-aot; just build-rootfs http-kestrel "{{examples_dir}}/http-server/kestrel/Dockerfile" ;;
+        pptx)           just build-rootfs agent-slim; just build-rootfs pptx "{{root_dir}}/demos/pptx-gen/Dockerfile.rootfs" ;;
+        agent-fw-local) just build-rootfs agent-slim; just build-rootfs agent-fw-local "{{examples_dir}}/agent-framework/local.Dockerfile" ;;
+        *) echo "::error::unknown demo '$d'"; exit 1 ;;
+        esac
+        python3 "{{root_dir}}/ci/run_demo.py" "$d"
+        echo "✓ $d"
+    done
+
+# On Windows the guest rootfs are prebuilt (restored from the CI cache, or
+# copied over from a Linux build) — no Docker — so we just build hluk and run.
+[windows]
+demos *which:
+    #!pwsh
+    $ErrorActionPreference = 'Stop'
+    just build
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $which = "{{which}}"
+    if (-not $which) { $which = "supply-chain autonomous http-flask http-express http-kestrel pptx agent-fw-local" }
+    $py = if (Get-Command py -ErrorAction SilentlyContinue) { "py" } else { "python" }
+    foreach ($d in $which.Split(" ", [StringSplitOptions]::RemoveEmptyEntries)) {
+        Write-Host "== demo: $d =="
+        & $py "{{root_dir}}/ci/run_demo.py" $d
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+
+# Full local gate — mirrors CI: format, lint, build guests, run the whole
+# test suite, then smoke-test the demos.  Heavy (builds every rootfs); use it
+# before a release or a big change.  `just verify-kernel` (Docker rebuild of
+# the elfloader) and `just conformance python` are run separately.
+[unix]
+ci:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo fmt --all --check
+    cargo clippy --all-targets --locked -- -D warnings
+    just build-all-rootfs
+    just build-test-bins
+    just test --locked
+    just demos
+    echo "✓ ci: all green"
+
+[windows]
+ci:
+    @Write-Error "ci needs Docker + KVM on Linux; run it there (just ci)."; exit 1
 
 # Run benchmarks for a runtime across all workloads and modes.
 #

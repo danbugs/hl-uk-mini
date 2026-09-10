@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Preserve directory layout so #include "../hl_fc.h" resolves
 COPY drivers/hl_fc.h /src/drivers/hl_fc.h
 COPY drivers/hl_env.h /src/drivers/hl_env.h
+COPY drivers/hl_driver.h /src/drivers/hl_driver.h
+COPY drivers/hl_py.h /src/drivers/hl_py.h
 COPY drivers/python/hl_pydriver.c /src/drivers/python/hl_pydriver.c
 
 RUN gcc -O2 -Wall -Wextra -Wno-unused-parameter \

@@ -5,6 +5,7 @@ RUN apk add --no-cache gcc musl-dev
 # Preserve directory layout so #include "../hl_fc.h" resolves
 COPY drivers/hl_fc.h /src/drivers/hl_fc.h
 COPY drivers/hl_env.h /src/drivers/hl_env.h
+COPY drivers/hl_driver.h /src/drivers/hl_driver.h
 COPY drivers/node/hl_nodedriver.c /src/drivers/node/hl_nodedriver.c
 
 RUN gcc -O2 -Wall -Wextra -Wno-unused-parameter \

@@ -43,11 +43,10 @@
 
 #include "../hl_fc.h"
 #include "../hl_env.h"
+#include "../hl_driver.h"
 
 /* ── State ─────────────────────────────────────────────────────── */
 
-static hl_dispatch_fn_t *g_callback_slot;
-static uint64_t g_dispatch_entry;
 static int g_pipe_to_node;    /* parent writes code here */
 static int g_pipe_from_node;  /* parent reads ack here */
 
@@ -243,15 +242,8 @@ int main(int argc, char **argv, char **envp)
 	(void)argv;
 
 	/* Parse kernel addresses from env vars */
-	hl_env_init(envp, &g_callback_slot, &g_dispatch_entry);
-	hl_env_clean_reserved();
-
-	if (!g_callback_slot || !g_dispatch_entry) {
-		fprintf(stderr,
-			"hl_nodedriver: missing HL_DISPATCH_CALLBACK_PTR "
-			"or HL_DISPATCH_ENTRY\n");
+	if (hl_driver_init(envp, "hl_nodedriver"))
 		return 1;
-	}
 
 	/* Create pipes: parent→child (code) and child→parent (ack) */
 	int pipe_code[2];  /* [0]=read, [1]=write */
@@ -299,20 +291,5 @@ int main(int argc, char **argv, char **envp)
 	unlink("/tmp/hl_bootstrap.js");
 
 	/* Register dispatch callback */
-	*g_callback_slot = node_dispatch;
-
-	/*
-	 * Halt the VM — same pattern as pydriver.
-	 * RAX = dispatch entry point address.
-	 */
-	__asm__ volatile(
-		"andq $~0xf, %%rsp\n\t"
-		"movq %0, %%rax\n\t"
-		"movw $108, %%dx\n\t"
-		"outl %%eax, %%dx\n\t"
-		"cli\n\t"
-		"hlt\n\t"
-		: : "r"(g_dispatch_entry) : "rax", "rdx", "memory"
-	);
-	__builtin_unreachable();
+	hl_driver_run(node_dispatch);
 }

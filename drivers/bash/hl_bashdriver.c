@@ -41,11 +41,10 @@
 
 #include "../hl_fc.h"
 #include "../hl_env.h"
+#include "../hl_driver.h"
 
 /* ── State ─────────────────────────────────────────────────────── */
 
-static hl_dispatch_fn_t *g_callback_slot;
-static uint64_t g_dispatch_entry;
 static int g_pipe_to_sh;    /* parent writes signal here */
 static int g_pipe_from_sh;  /* parent reads ack here */
 
@@ -189,15 +188,8 @@ int main(int argc, char **argv, char **envp)
 	(void)argv;
 
 	/* Parse kernel addresses from env vars */
-	hl_env_init(envp, &g_callback_slot, &g_dispatch_entry);
-	hl_env_clean_reserved();
-
-	if (!g_callback_slot || !g_dispatch_entry) {
-		fprintf(stderr,
-			"hl_bashdriver: missing HL_DISPATCH_CALLBACK_PTR "
-			"or HL_DISPATCH_ENTRY\n");
+	if (hl_driver_init(envp, "hl_bashdriver"))
 		return 1;
-	}
 
 	/* Create pipes: parent→child (signal) and child→parent (ack) */
 	int pipe_sig[2];  /* [0]=read, [1]=write */
@@ -242,17 +234,5 @@ int main(int argc, char **argv, char **envp)
 	unlink("/tmp/hl_bootstrap.sh");
 
 	/* Register dispatch callback */
-	*g_callback_slot = bash_dispatch;
-
-	/* Halt the VM — same pattern as other drivers */
-	__asm__ volatile(
-		"andq $~0xf, %%rsp\n\t"
-		"movq %0, %%rax\n\t"
-		"movw $108, %%dx\n\t"
-		"outl %%eax, %%dx\n\t"
-		"cli\n\t"
-		"hlt\n\t"
-		: : "r"(g_dispatch_entry) : "rax", "rdx", "memory"
-	);
-	__builtin_unreachable();
+	hl_driver_run(bash_dispatch);
 }

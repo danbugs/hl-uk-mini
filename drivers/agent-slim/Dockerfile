@@ -8,58 +8,11 @@
 # uses syscalls Unikraft doesn't support yet.
 #
 # Build context: repository root (not drivers/).
+#
+# The BusyBox userland comes from the shared hluk-busybox base image
+# (drivers/busybox.Dockerfile), pulled in with COPY --from=hluk-busybox below.
 
-# ── Stage 1: BusyBox (NOMMU + PIE on Alpine/musl) ───────────────
-
-FROM alpine:3.20 AS busybox
-
-RUN apk add --no-cache gcc musl-dev make perl linux-headers
-
-ARG BUSYBOX_VERSION=1.36.1
-RUN wget -q "https://busybox.net/downloads/busybox-${BUSYBOX_VERSION}.tar.bz2" && \
-    tar xjf "busybox-${BUSYBOX_VERSION}.tar.bz2" && \
-    mv "busybox-${BUSYBOX_VERSION}" /busybox-src
-
-WORKDIR /busybox-src
-
-RUN make defconfig && \
-    sed -i \
-        -e 's/# CONFIG_NOMMU is not set/CONFIG_NOMMU=y/' \
-        -e 's/# CONFIG_FEATURE_PREFER_APPLETS is not set/CONFIG_FEATURE_PREFER_APPLETS=y/' \
-        -e 's/# CONFIG_FEATURE_SH_STANDALONE is not set/CONFIG_FEATURE_SH_STANDALONE=y/' \
-        -e 's/# CONFIG_FEATURE_SH_NOFORK is not set/CONFIG_FEATURE_SH_NOFORK=y/' \
-        -e 's|CONFIG_BUSYBOX_EXEC_PATH=.*|CONFIG_BUSYBOX_EXEC_PATH="/bin/busybox"|' \
-        -e 's/# CONFIG_PIE is not set/CONFIG_PIE=y/' \
-        .config 2>/dev/null; \
-    yes '' | make oldconfig
-
-RUN make -j$(nproc) EXTRA_CFLAGS="-fPIE" EXTRA_LDFLAGS="-pie" && \
-    make install
-
-# Set up applet symlinks
-RUN mkdir -p /busybox-root/bin /busybox-root/usr/bin \
-             /busybox-root/sbin /busybox-root/tmp /busybox-root/etc && \
-    cp /busybox-src/busybox /busybox-root/bin/busybox && \
-    cd /busybox-root/bin && \
-    for applet in \
-        sh echo printf cat head tail wc sort uniq tr tee \
-        ls mkdir rmdir rm cp mv ln chmod chown touch \
-        grep egrep sed awk cut paste \
-        basename dirname realpath readlink \
-        date env sleep true false yes test \
-        uname hostname id whoami which \
-        dd od hexdump base64 md5sum sha256sum \
-        expr seq xargs \
-        find stat du df \
-    ; do \
-        ln -s busybox "$applet"; \
-    done
-
-# Minimal /etc for the shell
-RUN printf 'root:x:0:0:root:/root:/bin/sh\n' > /busybox-root/etc/passwd && \
-    printf 'root:x:0:\n' > /busybox-root/etc/group
-
-# ── Stage 2: Build agent driver against Python ──────────────────
+# ── Build: Python driver ────────────────────────────────────────
 
 FROM python:3.12-slim-bookworm AS build
 
@@ -72,6 +25,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Preserve directory layout so #include "../hl_fc.h" resolves
 COPY drivers/hl_fc.h /src/drivers/hl_fc.h
 COPY drivers/hl_env.h /src/drivers/hl_env.h
+COPY drivers/hl_driver.h /src/drivers/hl_driver.h
+COPY drivers/hl_py.h /src/drivers/hl_py.h
 COPY drivers/agent/hl_agentdriver.c /src/drivers/agent/hl_agentdriver.c
 
 RUN gcc -O2 -Wall -Wextra -Wno-unused-parameter \
@@ -145,8 +100,8 @@ COPY --from=build /tmp /tmp
 COPY drivers/python/sitecustomize.py /usr/local/lib/python3.12/sitecustomize.py
 
 # BusyBox with all applet symlinks + musl dynamic linker
-COPY --from=busybox /lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1
-COPY --from=busybox /busybox-root/ /
+COPY --from=hluk-busybox /lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1
+COPY --from=hluk-busybox /busybox-root/ /
 
 # Agent driver + lsb_release stub (must be in /bin — guest PATH is /bin)
 COPY --from=build /hl_agentdriver /usr/local/bin/hl_agentdriver
