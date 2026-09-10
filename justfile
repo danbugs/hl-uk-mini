@@ -36,7 +36,7 @@ scratch_node       := "512"
 scratch_dotnet_jit := "768"
 scratch_powershell := "1024"
 scratch_agent        := "1536"
-scratch_agent_slim   := "256"
+scratch_python_shell   := "256"
 scratch_agent_custom := "256"
 
 # Internal: resolve per-runtime scratch MiB (single source of truth).
@@ -54,7 +54,7 @@ _scratch-mb runtime:
         else if runtime == "dotnet-jit" { scratch_dotnet_jit } \
         else if runtime == "powershell" { scratch_powershell } \
         else if runtime == "agent" { scratch_agent } \
-        else if runtime == "agent-slim" { scratch_agent_slim } \
+        else if runtime == "python-shell" { scratch_python_shell } \
         else if runtime == "agent-custom" { scratch_agent_custom } \
         else { "256" } }}
 
@@ -197,7 +197,7 @@ clean-kernel:
 # ── Rootfs ───────────────────────────────────────────────────────
 
 # Build the shared BusyBox base image (hluk-busybox), the NOMMU/PIE userland
-# used by the bash, agent and agent-slim rootfs.  Built automatically by
+# used by the bash, agent and python-shell rootfs.  Built automatically by
 # build-rootfs for those runtimes; run directly to refresh it.
 [unix]
 build-busybox:
@@ -350,7 +350,7 @@ publish runtime registry version="":
 
 # Publish the shared BusyBox base as <registry>/busybox:latest.  busybox has no
 # driver and isn't a runnable guest, so it's base-only (no :initrd) — it's the
-# userland bash/agent/agent-slim build on.  Kept separate from `publish` (which
+# userland bash/agent/python-shell build on.  Kept separate from `publish` (which
 # is for runtimes), alongside publish-kernel / publish-urunc.
 [unix]
 publish-busybox registry version="":
@@ -586,7 +586,7 @@ test *args:
     exit $LASTEXITCODE
 
 # Build the demo/example guest rootfs (the ones not covered by build-all-rootfs).
-# Their base images (python/agent-slim/node/dotnet-aot) must exist first, so run
+# Their base images (python/python-shell/node/dotnet-aot) must exist first, so run
 # `just build-all-rootfs` before this.  supply-chain reuses the python rootfs.
 [unix]
 build-demos:
@@ -624,11 +624,11 @@ demos *which:
         case "$d" in
         supply-chain)   just build-rootfs python ;;
         autonomous)     just build-rootfs python; just build-rootfs autonomous "{{examples_dir}}/autonomous/Dockerfile" ;;
-        http-flask)     just build-rootfs agent-slim; just build-rootfs http-flask "{{examples_dir}}/http-server/flask/Dockerfile" ;;
+        http-flask)     just build-rootfs python-shell; just build-rootfs http-flask "{{examples_dir}}/http-server/flask/Dockerfile" ;;
         http-express)   just build-rootfs node; just build-rootfs http-express "{{examples_dir}}/http-server/express/Dockerfile" ;;
         http-kestrel)   just build-rootfs dotnet-aot; just build-rootfs http-kestrel "{{examples_dir}}/http-server/kestrel/Dockerfile" ;;
-        pptx)           just build-rootfs agent-slim; just build-rootfs pptx "{{root_dir}}/demos/pptx-gen/Dockerfile.rootfs" ;;
-        agent-fw-local) just build-rootfs agent-slim; just build-rootfs agent-fw-local "{{examples_dir}}/agent-framework/local.Dockerfile" ;;
+        pptx)           just build-rootfs python-shell; just build-rootfs pptx "{{root_dir}}/demos/pptx-gen/Dockerfile.rootfs" ;;
+        agent-fw-local) just build-rootfs python-shell; just build-rootfs agent-fw-local "{{examples_dir}}/agent-framework/local.Dockerfile" ;;
         *) echo "::error::unknown demo '$d'"; exit 1 ;;
         esac
         python3 "{{root_dir}}/ci/run_demo.py" "$d"

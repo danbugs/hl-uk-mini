@@ -57,7 +57,7 @@ the upstream test suite or benchmark tracking.
 - **Snapshot support** verified by at least one test.
 - **Example script** in `examples/<runtime>/`.
 
-**Current tier 2 runtimes:** Node.js, .NET JIT, Bash (BusyBox), Agent, Agent (slim)
+**Current tier 2 runtimes:** Node.js, .NET (JIT and AOT), Bash (BusyBox), Agent, Python-Shell
 
 ## Tier 3 — Builds
 
@@ -72,7 +72,7 @@ entry point for new runtimes.
 - **Example script** in `examples/<runtime>/` (recommended but not
   required).
 
-**Current tier 3 runtimes:** C, Rust, Go, .NET Native AOT, PowerShell
+**Current tier 3 runtimes:** C, Rust, Go, PowerShell
 
 ## Promotion and Demotion
 

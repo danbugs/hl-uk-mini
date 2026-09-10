@@ -1,5 +1,5 @@
 /*
- * hl_agentdriver — Agent runtime driver for Hyperlight.
+ * hl_pywarmdriver — pre-warming CPython driver for Hyperlight.
  *
  * Extended version of hl_pydriver that pre-warms heavy Python imports
  * (numpy, pandas, scipy, sklearn, matplotlib) at boot time, before
@@ -7,12 +7,13 @@
  * snapshot restore skips all import overhead.
  *
  * This same binary is compiled into both the full agent rootfs (which
- * has all 26 pip packages) and the agent-slim rootfs (which has none).
+ * has all 26 pip packages) and the python-shell rootfs (which has none).
  * Imports are wrapped in try/except so the driver boots cleanly in
  * either rootfs — missing packages are silently skipped.
  *
  * The FS_BASE save/restore, env bridge and dispatch body are shared with
- * hl_pydriver via hl_py.h; only the boot-time pre-warm below is agent-specific.
+ * hl_pydriver via hl_py.h; only the boot-time pre-warm below is specific
+ * to this driver.
  *
  * Flow:
  *   boot (evolve):
@@ -30,10 +31,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../hl_fc.h"
-#include "../hl_env.h"
-#include "../hl_py.h"
-#include "../hl_driver.h"
+#include "hl_fc.h"
+#include "hl_env.h"
+#include "hl_py.h"
+#include "hl_driver.h"
 
 /* ── Entry point ───────────────────────────────────────────────── */
 
@@ -44,7 +45,7 @@ int main(int argc, char **argv, char **envp)
 
 	/* Parse kernel addresses from env vars injected by
 	 * dispatch.c's uk_late_initcall. */
-	if (hl_driver_init(envp, "hl_agentdriver"))
+	if (hl_driver_init(envp, "hl_pywarmdriver"))
 		return 1;
 
 	/* Initialize Python while VFS is fully alive — open(),
@@ -54,7 +55,7 @@ int main(int argc, char **argv, char **envp)
 
 	PyRun_SimpleString(
 		"import sys\n"
-		"sys.argv = ['hl_agentdriver']\n");
+		"sys.argv = ['hl_pywarmdriver']\n");
 
 	/*
 	 * Pre-warm imports.
@@ -64,7 +65,7 @@ int main(int argc, char **argv, char **envp)
 	 * snapshot restore skip all import overhead.
 	 *
 	 * Imports are wrapped in try/except so the driver works even
-	 * if some packages aren't installed (e.g., agent-slim rootfs).
+	 * if some packages aren't installed (e.g., python-shell rootfs).
 	 *
 	 * MPL_IGNORE_SYSTEM_FONTS: the unikernel has no system fonts
 	 * (no /usr/share/fonts, no fc-list).  Without this flag,

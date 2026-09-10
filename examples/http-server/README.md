@@ -5,7 +5,7 @@ reachable from the host on `http://127.0.0.1:8080`:
 
 | Server | Runtime | Rootfs |
 |--------|---------|--------|
-| Flask   | Python 3.12 | extends `agent-slim` with `flask` |
+| Flask   | Python 3.12 | extends `python-shell` with `flask` |
 | Express | Node 21     | extends the `node` rootfs with `express` |
 | Kestrel | .NET 9 (ASP.NET Core) | self-contained musl publish on the `dotnet-aot` driver |
 

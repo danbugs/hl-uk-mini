@@ -7,7 +7,7 @@ and SSL support for runtime `pip install` via `--net`.
 
 ```bash
 just build-rootfs agent         # full agent (~400MB, numpy/pandas/scipy/sklearn/matplotlib/seaborn)
-just build-rootfs agent-slim    # slim agent (~50MB, no data-science packages)
+just build-rootfs python-shell    # slim agent (~50MB, no data-science packages)
 ```
 
 ## Run examples
@@ -29,8 +29,8 @@ just run agent --net examples/agent/pip_install.py
 Slim examples (same scripts, smaller rootfs):
 
 ```bash
-just run agent-slim examples/agent/hello.py
-just run agent-slim examples/agent/shell_commands.py
+just run python-shell examples/agent/hello.py
+just run python-shell examples/agent/shell_commands.py
 ```
 
 Or with `hluk` directly:
@@ -39,7 +39,7 @@ Or with `hluk` directly:
 hluk run --initrd build-elfloader/agent-rootfs.cpio \
     --scratch-mb 1536 examples/agent/hello.py
 
-hluk run --initrd build-elfloader/agent-slim-rootfs.cpio \
+hluk run --initrd build-elfloader/python-shell-rootfs.cpio \
     --scratch-mb 256 examples/agent/hello.py
 ```
 
@@ -72,7 +72,7 @@ sandbox.
 
 ## Custom rootfs
 
-The `custom/` directory shows how to extend `agent-slim` with additional
+The `custom/` directory shows how to extend `python-shell` with additional
 packages. It installs Flask and Pydantic via pip:
 
 ```bash
@@ -90,10 +90,10 @@ just build-rootfs my-custom path/to/my/Dockerfile
 just run my-custom my_script.py
 ```
 
-A typical Dockerfile extends `agent-slim`:
+A typical Dockerfile extends `python-shell`:
 
 ```dockerfile
-FROM hluk-agent-slim-rootfs:latest AS base
+FROM hluk-python-shell-rootfs:latest AS base
 
 FROM python:3.12-slim-bookworm AS installer
 COPY --from=base / /rootfs/

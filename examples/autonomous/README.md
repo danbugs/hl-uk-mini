@@ -7,7 +7,7 @@ with its language's natural entrypoint:
 
 | Runtime | Driver | Entrypoint |
 |---|---|---|
-| Python / agent | `hl_pydriver` / `hl_agentdriver` | `/entrypoint.py` |
+| Python / agent | `hl_pydriver` / `hl_pywarmdriver` | `/entrypoint.py` |
 | Node | `hl_nodedriver` | `/entrypoint.js` |
 | Bash | `hl_bashdriver` | `/entrypoint.sh` |
 | .NET (JIT) | `hl_dotnetdriver` | `/entrypoint.cs` |

@@ -44,16 +44,16 @@ RUN pip install --no-cache-dir \
     true
 
 # ── Compile agent driver ────────────────────────────────────────
-# Preserve directory layout so #include "../hl_fc.h" resolves
+# Headers live alongside the driver in /src/drivers/ so #include "hl_fc.h" resolves
 COPY drivers/hl_fc.h           /src/drivers/hl_fc.h
 COPY drivers/hl_env.h /src/drivers/hl_env.h
 COPY drivers/hl_driver.h /src/drivers/hl_driver.h
 COPY drivers/hl_py.h /src/drivers/hl_py.h
-COPY drivers/agent/hl_agentdriver.c /src/drivers/agent/hl_agentdriver.c
+COPY drivers/hl_pywarmdriver.c /src/drivers/hl_pywarmdriver.c
 
 RUN gcc -O2 -Wall -Wextra -Wno-unused-parameter \
         $(python3-config --cflags --embed) \
-        -o /hl_agentdriver /src/drivers/agent/hl_agentdriver.c \
+        -o /hl_pywarmdriver /src/drivers/hl_pywarmdriver.c \
         $(python3-config --ldflags --embed)
 
 # No-op lsb_release stub — pip's distro detection execs this; without
@@ -124,6 +124,6 @@ COPY drivers/python/sitecustomize.py /usr/local/lib/python3.12/sitecustomize.py
 COPY --from=hluk-busybox /lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1
 COPY --from=hluk-busybox /busybox-root/ /
 
-# Agent driver + lsb_release stub (must be in /bin — guest PATH is /bin)
-COPY --from=build /hl_agentdriver /usr/local/bin/hl_agentdriver
+# Pre-warm driver + lsb_release stub (must be in /bin — guest PATH is /bin)
+COPY --from=build /hl_pywarmdriver /usr/local/bin/hl_pywarmdriver
 COPY --from=build /usr/bin/lsb_release /bin/lsb_release

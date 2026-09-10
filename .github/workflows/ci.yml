@@ -334,13 +334,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [linux, windows]
-        runtime: [python, agent-slim, agent]
+        runtime: [python, python-shell, agent]
         include:
           - os: linux
             runner: ubuntu-latest
           - os: windows
             runner: windows-latest
-        # agent is the slow one (~20 min on Windows); agent-slim covers the
+        # agent is the slow one (~20 min on Windows); python-shell covers the
         # same paths on PRs, agent's history is kept from pushes to main.
         exclude:
           - runtime: ${{ github.event_name == 'pull_request' && 'agent' || '' }}

@@ -21,7 +21,7 @@
  *              → halt
  *
  * The FS_BASE save/restore, env bridge and dispatch body are shared with
- * hl_agentdriver via hl_py.h.
+ * hl_pywarmdriver via hl_py.h.
  *
  * TODO: HL_DISPATCH_CALLBACK_PTR / HL_DISPATCH_ENTRY are raw kernel
  * addresses injected as env vars.  Replace with a cleaner interface
