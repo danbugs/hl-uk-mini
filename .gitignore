@@ -2,3 +2,7 @@
 /build-elfloader
 /.snapshots
 /bench-results.json
+
+# Python bytecode (ci/run_demo.py compiles this on run)
+__pycache__/
+*.pyc

@@ -89,7 +89,7 @@ jobs:
 
       - name: Cache key
         id: key
-        run: echo "key=rootfs-${{ hashFiles('drivers/**', 'conformance/python/**', 'examples/agent/custom/Dockerfile', 'examples/c/**', 'examples/rust/**', 'examples/go/**', 'examples/dotnet-aot/**', 'examples/dotnet-aot-envvars/**') }}" >> "$GITHUB_OUTPUT"
+        run: echo "key=rootfs-${{ hashFiles('drivers/**', 'conformance/python/**', 'examples/agent/custom/Dockerfile', 'examples/c/**', 'examples/rust/**', 'examples/go/**', 'examples/dotnet-aot/**', 'examples/dotnet-aot-envvars/**', 'examples/autonomous/**', 'examples/http-server/**', 'examples/agent-framework/local.Dockerfile', 'demos/pptx-gen/Dockerfile.rootfs') }}" >> "$GITHUB_OUTPUT"
 
       - name: Cache guest images and test binaries
         id: rootfs-cache
@@ -123,6 +123,7 @@ jobs:
           just build-all-rootfs
           just build-conformance python
           just build-test-bins
+          just build-demos
 
   # ── Test ──────────────────────────────────────────────────────
   test:
@@ -182,6 +183,66 @@ jobs:
       # `just test` sets the WHP surrogate pool and thread count on Windows.
       - name: cargo test
         run: just test --locked
+
+  # ── Demos ──────────────────────────────────────────────────────
+  # End-to-end demo/example runs the integration tests don't cover (in-guest
+  # HTTP servers, the autonomous appliance, pptx generation, a local agent, the
+  # supply-chain containment demo).  The guest rootfs come from the cache the
+  # `rootfs` job built; `just demos` runs ci/run_demo.py, the same runner on
+  # both OSes.  One job per (os, demo) so failures are isolated.
+  demos:
+    name: demos (${{ matrix.os }}, ${{ matrix.demo }})
+    needs: rootfs
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [linux, windows]
+        demo: [supply-chain, autonomous, http-flask, http-express, http-kestrel, pptx, agent-fw-local]
+        include:
+          - os: linux
+            runner: ubuntu-latest
+          - os: windows
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: "v1-rust"
+          cache-directories: |
+            target/debug/build/hls
+            target/release/build/hls
+          save-if: false
+
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+
+      # ci/run_demo.py is the cross-platform runner; pin a Python for it.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Restore guest images
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build-elfloader
+          key: ${{ needs.rootfs.outputs.cache-key }}
+          enableCrossOsArchive: true
+          fail-on-cache-miss: true
+
+      - name: Enable KVM
+        if: runner.os == 'Linux'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+
+      - name: Run demo
+        run: just demos ${{ matrix.demo }}
 
   # ── Conformance ──────────────────────────────────────────────
   conformance:
@@ -357,7 +418,7 @@ jobs:
   # ── Gate ──────────────────────────────────────────────────────
   ci-passed:
     if: always()
-    needs: [lint, typos, kernel-verify, rootfs, test, conformance, bench]
+    needs: [lint, typos, kernel-verify, rootfs, test, demos, conformance, bench]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
