@@ -662,6 +662,7 @@ ci:
     set -euo pipefail
     cargo fmt --all --check
     cargo clippy --all-targets --locked -- -D warnings
+    just check-license-headers
     just build-all-rootfs
     just build-test-bins
     just test --locked
@@ -671,6 +672,10 @@ ci:
 [windows]
 ci:
     @Write-Error "ci needs Docker + KVM on Linux; run it there (just ci)."; exit 1
+
+# Check that every first-party Rust file carries the SPDX license header.
+check-license-headers:
+    ./dev/check-license-headers.sh
 
 # Run benchmarks for a runtime across all workloads and modes.
 #

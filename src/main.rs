@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Hyperlight Authors.
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 use std::time::Instant;

@@ -44,6 +44,9 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --all-targets --locked -- -D warnings
 
+      - name: License headers
+        run: ./dev/check-license-headers.sh
+
   # ── Spell check ──────────────────────────────────────────────
   typos:
     runs-on: ubuntu-latest

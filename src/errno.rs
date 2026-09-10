@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Hyperlight Authors.
+
 //! Linux `errno` values for the guest.
 //!
 //! The guest is a Linux-ABI unikernel: every error a host function

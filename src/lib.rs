@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Hyperlight Authors.
+
 //! Hyperlight-Unikraft — host library for running Unikraft unikernels
 //! on Hyperlight.
 //!
