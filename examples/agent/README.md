@@ -73,14 +73,14 @@ sandbox.
 ## Custom rootfs
 
 The `custom/` directory shows how to extend `python-shell` with additional
-packages. It installs Flask and Pydantic via pip:
+packages. It installs Pydantic and PyYAML via pip:
 
 ```bash
 # Build the custom rootfs example
 just build-rootfs agent-custom examples/agent/custom/Dockerfile
 
 # Run the custom example
-just run agent-custom examples/agent/custom/hello_flask.py
+just run agent-custom examples/agent/custom/custom_packages.py
 ```
 
 To build your own custom rootfs, create a Dockerfile and use:
