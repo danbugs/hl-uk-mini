@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789087831017,
+  "lastUpdate": 1789147743183,
   "repoUrl": "https://github.com/danbugs/hl-uk-mini",
   "entries": {
     "python-shell benchmarks": [
@@ -833,6 +833,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "parallel-exec/stdlib",
             "value": 27.125,
+            "unit": "ms"
+          },
+          {
+            "name": "snapshot-size/compute",
+            "value": 111.6,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/hello",
+            "value": 111.6,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/stdlib",
+            "value": 111.6,
+            "unit": "MiB"
+          },
+          {
+            "name": "rss/compute",
+            "value": 19,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/hello",
+            "value": 17,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/stdlib",
+            "value": 19,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danilochiarlone@gmail.com",
+            "name": "danbugs",
+            "username": "danbugs"
+          },
+          "committer": {
+            "email": "danilochiarlone@gmail.com",
+            "name": "danbugs",
+            "username": "danbugs"
+          },
+          "distinct": true,
+          "id": "5e5aa8c5b3e0da73c4d52377eb1bb195e54a46db",
+          "message": "docs(fs): correct create_sandbox example to the 6-arg signature\n\nThe Rust example passed a bare `false` in place of the network policy and\nwas missing the listen-ports argument; create_sandbox takes\n(initrd, entry, scratch_mb, mounts, network, listen_ports).\n\nSigned-off-by: danbugs <danilochiarlone@gmail.com>",
+          "timestamp": "2026-09-11T17:27:09Z",
+          "tree_id": "50ed154778cd7231daaa0f8d5e0b0f8361ae1f18",
+          "url": "https://github.com/danbugs/hl-uk-mini/commit/5e5aa8c5b3e0da73c4d52377eb1bb195e54a46db"
+        },
+        "date": 1789147741288,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cold/compute",
+            "value": 617.895,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/hello",
+            "value": 615.281,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/stdlib",
+            "value": 627.121,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/compute",
+            "value": 17.478,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/hello",
+            "value": 10.135,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/stdlib",
+            "value": 34.154,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/compute",
+            "value": 8.29,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/hello",
+            "value": 3.454,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/stdlib",
+            "value": 18.806,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/compute",
+            "value": 0.6,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/hello",
+            "value": 0.561,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/stdlib",
+            "value": 0.637,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/compute",
+            "value": 2.512,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/hello",
+            "value": 0.179,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/stdlib",
+            "value": 10.194,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/compute",
+            "value": 13.986,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/hello",
+            "value": 5.967,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/stdlib",
+            "value": 27.298,
             "unit": "ms"
           },
           {
