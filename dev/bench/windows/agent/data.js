@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789075121513,
+  "lastUpdate": 1789089177760,
   "repoUrl": "https://github.com/danbugs/hl-uk-mini",
   "entries": {
     "agent benchmarks": [
@@ -287,6 +287,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "rss/stdlib",
             "value": 28,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danilochiarlone@gmail.com",
+            "name": "Dan Chiarlone",
+            "username": "danbugs"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c8f50bf0d99c21de40d573fee1599506b2f2b48c",
+          "message": "Merge pull request #8 from danbugs/repo-polish\n\nRepo polish: standard files, license headers, README, and python-shell rename",
+          "timestamp": "2026-09-10T17:37:19-07:00",
+          "tree_id": "5efb02e9c2735a8a3a5829b10eab4f38f703c4e9",
+          "url": "https://github.com/danbugs/hl-uk-mini/commit/c8f50bf0d99c21de40d573fee1599506b2f2b48c"
+        },
+        "date": 1789089167532,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cold/compute",
+            "value": 16169.748,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/hello",
+            "value": 16118.94,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/stdlib",
+            "value": 16208.759,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/compute",
+            "value": 144.623,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/hello",
+            "value": 78.229,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/stdlib",
+            "value": 192.973,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/compute",
+            "value": 28.955,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/hello",
+            "value": 13.707,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/stdlib",
+            "value": 48.78,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/compute",
+            "value": 55.883,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/hello",
+            "value": 55.638,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/stdlib",
+            "value": 56.104,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/compute",
+            "value": 2.87,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/hello",
+            "value": 0.358,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/stdlib",
+            "value": 10.828,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/compute",
+            "value": 44.61,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/hello",
+            "value": 19.787,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/stdlib",
+            "value": 74.531,
+            "unit": "ms"
+          },
+          {
+            "name": "snapshot-size/compute",
+            "value": 875.3,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/hello",
+            "value": 875.3,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/stdlib",
+            "value": 875.3,
+            "unit": "MiB"
+          },
+          {
+            "name": "rss/compute",
+            "value": 28,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/hello",
+            "value": 20,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/stdlib",
+            "value": 33,
             "unit": "MB"
           }
         ]
