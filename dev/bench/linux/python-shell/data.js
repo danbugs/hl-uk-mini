@@ -2,7 +2,7 @@ window.BENCHMARK_DATA = {
   "lastUpdate": 1789074024094,
   "repoUrl": "https://github.com/danbugs/hl-uk-mini",
   "entries": {
-    "agent-slim benchmarks": [
+    "python-shell benchmarks": [
       {
         "commit": {
           "author": {
