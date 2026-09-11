@@ -3,16 +3,17 @@
 mod common;
 
 use common::{UNUSED_PORT, host_ip, net_probe, require_rootfs};
-use hyperlight_unikraft::{AllowList, BlockList, NetworkPolicy, create_sandbox, init, run};
+use hyperlight_unikraft::{AllowList, BlockList, NetworkPolicy, SandboxBuilder, run};
 
 /// Networking disabled by default — guest socket calls fail because
 /// net_* host functions aren't registered at all.
 #[test]
 fn net_policy_disabled_by_default() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
     // socket() calls the net_socket host function which isn't registered,
     // causing the guest to abort — run() returns an error.
     let result = run(

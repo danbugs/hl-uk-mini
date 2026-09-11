@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use hyperlight_unikraft::{ListenPorts, NetworkPolicy, create_sandbox, init, run};
+use hyperlight_unikraft::{ListenPorts, NetworkPolicy, SandboxBuilder, run};
 
 #[allow(dead_code)]
 pub fn rootfs(runtime: &str) -> Option<PathBuf> {
@@ -129,9 +129,14 @@ pub fn net_probe(
         Some(p) => p,
         None => return "SKIP".to_string(),
     };
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), policy, listen_ports).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let mut builder = SandboxBuilder::from_initrd(rootfs).scratch_mb(256);
+    if let Some(policy) = policy {
+        builder = builder.network(policy);
+    }
+    if let Some(listen_ports) = listen_ports {
+        builder = builder.listen_ports(listen_ports);
+    }
+    let (mut sandbox, cfg) = builder.boot().unwrap();
     let code = format!(
         "HOST = {host:?}; PORT = {port}\n{}",
         include_str!("../../examples/python/net_policy_probe.py"),

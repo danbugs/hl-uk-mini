@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use common::{require_rootfs, snapshot_dir};
 use hyperlight_unikraft::{
-    Exec, NetworkPolicy, OciTag, SNAPSHOT_TAG, Snapshot, create_sandbox, init, restore, run,
+    Exec, NetworkPolicy, OciTag, SNAPSHOT_TAG, SandboxBuilder, Snapshot, run,
 };
 
 // ── Agent (full) tests ───────────────────────────────────────────
@@ -16,9 +16,10 @@ use hyperlight_unikraft::{
 fn agent_hello() {
     let rootfs = require_rootfs("agent");
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/agent/hello.py");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 1536, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(1536)
+        .boot()
+        .unwrap();
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -31,9 +32,10 @@ fn agent_hello() {
 fn agent_data_science() {
     let rootfs = require_rootfs("agent");
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/agent/data_science.py");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 1536, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(1536)
+        .boot()
+        .unwrap();
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -46,9 +48,10 @@ fn agent_data_science() {
 fn agent_shell_subprocess() {
     let rootfs = require_rootfs("agent");
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/agent/shell_commands.py");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 1536, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(1536)
+        .boot()
+        .unwrap();
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -60,9 +63,10 @@ fn agent_shell_subprocess() {
 #[test]
 fn agent_ssl_available() {
     let rootfs = require_rootfs("agent");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 1536, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(1536)
+        .boot()
+        .unwrap();
     run(
         &mut sandbox,
         r#"
@@ -96,9 +100,10 @@ fn agent_snapshot_round_trip() {
     let snap_dir = snapshot_dir("agent-snap");
 
     // Save
-    let (usandbox, _cfg) =
-        create_sandbox(&Some(rootfs), &None, 1536, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, _cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(1536)
+        .boot()
+        .unwrap();
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
@@ -106,7 +111,7 @@ fn agent_snapshot_round_trip() {
     // Restore + run hello.py from snapshot
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
-    let (mut sandbox, cfg2) = restore(snap, Vec::new(), None, None).unwrap();
+    let (mut sandbox, cfg2) = SandboxBuilder::from_snapshot(snap).boot().unwrap();
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/agent/hello.py");
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg2.drain_output();
@@ -127,9 +132,10 @@ fn agent_verify_all_packages() {
     let rootfs = require_rootfs("agent");
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/agent/verify_packages.py");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 1536, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(1536)
+        .boot()
+        .unwrap();
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -146,16 +152,11 @@ fn agent_verify_all_packages() {
 fn agent_pip_install() {
     let rootfs = require_rootfs("agent");
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/agent/pip_install.py");
-    let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs),
-        &None,
-        1536,
-        Vec::new(),
-        Some(NetworkPolicy::AllowAll),
-        None,
-    )
-    .unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(1536)
+        .network(NetworkPolicy::AllowAll)
+        .boot()
+        .unwrap();
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -171,9 +172,10 @@ fn agent_custom_packages() {
     let rootfs = require_rootfs("agent-custom");
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/agent/custom/custom_packages.py");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
     assert!(

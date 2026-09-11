@@ -7,15 +7,16 @@ use std::sync::Arc;
 
 use common::{hluk_with_stdin, require_rootfs, snapshot_dir};
 use hyperlight_unikraft::{
-    Exec, Mount, NetworkPolicy, OciTag, SNAPSHOT_TAG, Snapshot, create_sandbox, init, restore, run,
+    Exec, Mount, NetworkPolicy, OciTag, SNAPSHOT_TAG, SandboxBuilder, Snapshot, run,
 };
 
 #[test]
 fn python_inline_code() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
     run(&mut sandbox, "print('hluk-test-ok')").unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -28,9 +29,10 @@ fn python_inline_code() {
 fn python_exec_file() {
     let rootfs = require_rootfs("python");
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/python/hello.py");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -45,9 +47,10 @@ fn python_snapshot_round_trip() {
     let snap_dir = snapshot_dir("py-snap");
 
     // Save
-    let (usandbox, _cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, _cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
@@ -55,7 +58,7 @@ fn python_snapshot_round_trip() {
     // Restore + run
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
-    let (mut sandbox, cfg2) = restore(snap, Vec::new(), None, None).unwrap();
+    let (mut sandbox, cfg2) = SandboxBuilder::from_snapshot(snap).boot().unwrap();
     run(&mut sandbox, "print('restored-ok')").unwrap();
     let output = cfg2.drain_output();
     assert!(
@@ -69,9 +72,10 @@ fn python_snapshot_round_trip() {
 #[test]
 fn python_multiple_runs() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
     run(&mut sandbox, "x = 1 + 1").unwrap();
     run(&mut sandbox, "print(f'x={x}')").unwrap();
     let output = cfg.drain_output();
@@ -90,15 +94,16 @@ fn python_multiple_runs() {
 #[test]
 fn python_env_vars() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
     cfg.set_env_vars(&[
         ("MY_VAR", "hello_world"),
         ("DEBUG", "1"),
         ("GREETING", "hi there"),
     ])
     .unwrap();
-    let mut sandbox = init(usandbox).unwrap();
     run(
         &mut sandbox,
         Exec::File(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/python/env_vars.py")),
@@ -122,10 +127,11 @@ fn python_env_vars() {
 #[test]
 fn python_env_vars_inline() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
     cfg.set_env_vars(&[("SECRET", "42")]).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
     run(&mut sandbox, "import os; print(os.environ['SECRET'])").unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -140,9 +146,10 @@ fn python_env_vars_snapshot_restore() {
     let snap_dir = snapshot_dir("py-env-snap");
 
     // Save snapshot (no env vars set at save time)
-    let (usandbox, _cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, _cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
@@ -150,7 +157,7 @@ fn python_env_vars_snapshot_restore() {
     // Restore + set env vars AFTER restore
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
-    let (mut sandbox, cfg2) = restore(snap, Vec::new(), None, None).unwrap();
+    let (mut sandbox, cfg2) = SandboxBuilder::from_snapshot(snap).boot().unwrap();
     cfg2.set_env_vars(&[("RESTORED_VAR", "from_snapshot")])
         .unwrap();
     run(
@@ -176,9 +183,10 @@ print(f'RESTORED_VAR={v}')
 #[test]
 fn python_env_vars_stateful_across_dispatches() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
 
     // 1. Run with no env vars set — STATEFUL_VAR should not exist.
     run(
@@ -324,8 +332,11 @@ fn python_fs_ops() {
     std::fs::create_dir_all(&mount_dir).unwrap();
 
     let mounts = vec![Mount::rw(&mount_dir, "/mnt/host")];
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, mounts, None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .mounts(mounts)
+        .boot()
+        .unwrap();
 
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/python/fs_ops.py");
     run(&mut sandbox, Exec::File(script)).unwrap();
@@ -362,8 +373,11 @@ fn python_fs_large_file() {
     std::fs::create_dir_all(&mount_dir).unwrap();
 
     let mounts = vec![Mount::rw(&mount_dir, "/mnt/host")];
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, mounts, None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .mounts(mounts)
+        .boot()
+        .unwrap();
 
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/python/fs_large.py");
     run(&mut sandbox, Exec::File(script)).unwrap();
@@ -386,9 +400,10 @@ fn python_fs_large_file() {
 #[test]
 fn python_guest_fs_ops() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
 
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/python/guest_fs.py");
     run(&mut sandbox, Exec::File(script)).unwrap();
@@ -402,9 +417,10 @@ fn python_guest_fs_ops() {
 #[test]
 fn python_threading() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
 
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/python/threading_demo.py");
@@ -419,9 +435,10 @@ fn python_threading() {
 #[test]
 fn python_subprocess() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
 
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/python/subprocess_demo.py");
@@ -436,16 +453,11 @@ fn python_subprocess() {
 #[test]
 fn python_tcp_echo() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs),
-        &None,
-        256,
-        Vec::new(),
-        Some(NetworkPolicy::AllowAll),
-        None,
-    )
-    .unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .network(NetworkPolicy::AllowAll)
+        .boot()
+        .unwrap();
 
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/python/tcp_echo.py");
     run(&mut sandbox, Exec::File(script)).unwrap();
@@ -459,16 +471,11 @@ fn python_tcp_echo() {
 #[test]
 fn python_tcp_bidir() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs),
-        &None,
-        256,
-        Vec::new(),
-        Some(NetworkPolicy::AllowAll),
-        None,
-    )
-    .unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .network(NetworkPolicy::AllowAll)
+        .boot()
+        .unwrap();
 
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/python/tcp_bidir.py");
     run(&mut sandbox, Exec::File(script)).unwrap();
@@ -482,16 +489,11 @@ fn python_tcp_bidir() {
 #[test]
 fn python_http_server_client() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs),
-        &None,
-        256,
-        Vec::new(),
-        Some(NetworkPolicy::AllowAll),
-        None,
-    )
-    .unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .network(NetworkPolicy::AllowAll)
+        .boot()
+        .unwrap();
 
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/python/http_server_client.py");
@@ -506,16 +508,11 @@ fn python_http_server_client() {
 #[test]
 fn python_http_get() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs),
-        &None,
-        256,
-        Vec::new(),
-        Some(NetworkPolicy::AllowAll),
-        None,
-    )
-    .unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .network(NetworkPolicy::AllowAll)
+        .boot()
+        .unwrap();
 
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/python/http_get.py");
     run(&mut sandbox, Exec::File(script)).unwrap();
@@ -529,16 +526,11 @@ fn python_http_get() {
 #[test]
 fn python_threaded_select() {
     let rootfs = require_rootfs("python");
-    let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs),
-        &None,
-        256,
-        Vec::new(),
-        Some(NetworkPolicy::AllowAll),
-        None,
-    )
-    .unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .network(NetworkPolicy::AllowAll)
+        .boot()
+        .unwrap();
 
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/python/threaded_select.py");
