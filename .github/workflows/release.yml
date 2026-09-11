@@ -28,6 +28,8 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
+
       - name: Read version from Cargo.toml
         id: version
         run: |
@@ -60,11 +62,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          # Release notes are the matching CHANGELOG.md section (curated), not
+          # an auto-generated PR list.
+          just changelog-notes "v$VERSION" > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "::error::No CHANGELOG.md section for v$VERSION — add one before releasing"
+            exit 1
+          fi
           git tag "v$VERSION"
           git push origin "v$VERSION"
           gh release create "v$VERSION" \
             --title "v$VERSION" \
-            --generate-notes \
+            --notes-file RELEASE_NOTES.md \
             "hluk-v$VERSION-x86_64-unknown-linux-gnu.tar.gz"
 
       - name: Trigger GHCR image publish

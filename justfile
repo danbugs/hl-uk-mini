@@ -393,6 +393,38 @@ pull-rootfs runtime registry:
 pull-rootfs runtime registry:
     @Write-Error "pull-rootfs needs Docker on Linux; pull there and copy the CPIO."; exit 1
 
+# ── Release ──────────────────────────────────────────────────────
+
+# Print release notes for a version: the curated CHANGELOG.md section, plus
+# GitHub's auto-generated PR list (best-effort — needs `gh` and a version tag,
+# as in CI).  Mirrors hyperlight's `create-release-notes` (which does the same
+# via dev/extract-changelog.sh), kept in the justfile.  Accepts `v0.13.0`,
+# `0.13.0`, or `Prerelease`; release.yml pipes it into `gh release create
+# --notes-file`.
+[unix]
+changelog-notes version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Curated summary: the CHANGELOG.md section for this version.
+    awk -v ver="{{version}}" '
+        BEGIN { h1 = "## [" ver "]"; sub(/^v/, "", ver); h2 = "## [v" ver "]"; h3 = "## [" ver "]" }
+        index($0, h1)==1 || index($0, h2)==1 || index($0, h3)==1 { grab=1; next }
+        grab && /^## \[/ { exit }
+        grab { print }
+    ' "{{root_dir}}/CHANGELOG.md" | sed -e '/./,$!d' | sed -e :strip -e '/^\n*$/{$d;N;bstrip}'
+    # Plus GitHub's auto-generated PR list, stripped of its own heading.
+    if [ "{{version}}" != "Prerelease" ] && command -v gh >/dev/null 2>&1; then
+        prs="$(gh api "repos/{owner}/{repo}/releases/generate-notes" \
+            -f tag_name="{{version}}" --jq '.body' 2>/dev/null | sed '1,/^## /d')" || true
+        if [ -n "${prs:-}" ]; then
+            printf '\n## Pull requests\n\n%s\n' "$prs"
+        fi
+    fi
+
+[windows]
+changelog-notes version:
+    @Write-Error "changelog-notes uses a POSIX shell; run it on Linux."; exit 1
+
 # ── Publish (GHCR) ───────────────────────────────────────────────
 #
 # Push images to <registry> (the workflow passes ghcr.io/<owner>/<repo>).  Each
