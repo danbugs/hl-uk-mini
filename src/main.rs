@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 
 use hyperlight_unikraft::{
     AllowList, BlockList, DEFAULT_SCRATCH_MB, Exec, ListenPorts, Mount, NetworkPolicy, OciTag,
-    SNAPSHOT_TAG, Snapshot, create_sandbox, init, restore, run,
+    SNAPSHOT_TAG, Snapshot, create_sandbox, create_sandbox_with_kernel, init, restore, run,
 };
 
 /// Minimal Hyperlight host for Unikraft unikernels.
@@ -65,6 +65,12 @@ struct RunArgs {
     /// Auto-detected from the initrd if not specified.
     #[arg(long)]
     entry: Option<String>,
+
+    /// Advanced: boot a kernel from this path instead of the embedded one.
+    /// Must match the host ABI this build expects, or the guest will fault.
+    /// Intended for kernel development.
+    #[arg(long, value_name = "PATH")]
+    kernel: Option<PathBuf>,
 
     /// Scratch memory in MiB (default 256; increase for large rootfs).
     #[arg(long, default_value_t = DEFAULT_SCRATCH_MB)]
@@ -123,6 +129,12 @@ struct SaveArgs {
     /// Auto-detected from the initrd if not specified.
     #[arg(long)]
     entry: Option<String>,
+
+    /// Advanced: boot a kernel from this path instead of the embedded one.
+    /// Must match the host ABI this build expects, or the guest will fault.
+    /// Intended for kernel development.
+    #[arg(long, value_name = "PATH")]
+    kernel: Option<PathBuf>,
 
     /// Scratch memory in MiB (default 256; increase for large rootfs).
     #[arg(long, default_value_t = DEFAULT_SCRATCH_MB)]
@@ -326,6 +338,16 @@ fn parse_net_policy(
     } else {
         None
     };
+    // Listen ports are meaningless without networking: `hostnet` is only
+    // registered when a policy is present, so `--port` on its own would be a
+    // silent no-op (the guest gets no networking at all).  Reject it up front
+    // rather than let the user believe the guest can bind.
+    if !ports.is_empty() && policy.is_none() {
+        return Err(
+            "--port requires networking to be enabled; pass --net (or --net-allow/--net-block) too"
+                .to_string(),
+        );
+    }
     let listen = if !ports.is_empty() {
         Some(ListenPorts::from_ports(ports.iter().copied()))
     } else {
@@ -385,7 +407,8 @@ fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
         .unwrap_or_else(|| Exec::Guest(args.guest_exec.unwrap_or_default()));
     let envs = parse_envs(&args.envs);
 
-    let (usandbox, config) = create_sandbox(
+    let (usandbox, config) = create_sandbox_with_kernel(
+        &args.kernel,
         &args.initrd,
         &args.entry,
         args.scratch_mb,
@@ -414,7 +437,8 @@ fn cmd_snapshot_save(args: SaveArgs) -> hyperlight_unikraft::hyperlight_host::Re
     let (policy, listen) =
         parse_net_policy(args.net, &args.net_allow, &args.net_block, &args.ports)
             .map_err(hyperlight_unikraft::hyperlight_host::HyperlightError::Error)?;
-    let (usandbox, _config) = create_sandbox(
+    let (usandbox, _config) = create_sandbox_with_kernel(
+        &args.kernel,
         &args.initrd,
         &args.entry,
         args.scratch_mb,
@@ -954,5 +978,42 @@ mod tests {
     fn parse_invalid_no_colon() {
         let mounts = parse_mounts(&["invalid".into()]);
         assert!(mounts.is_empty());
+    }
+
+    #[test]
+    fn net_policy_none_by_default() {
+        let (policy, listen) = parse_net_policy(false, &[], &[], &[]).unwrap();
+        assert!(policy.is_none());
+        assert!(listen.is_none());
+    }
+
+    #[test]
+    fn net_policy_bare_net_is_allow_all() {
+        let (policy, listen) = parse_net_policy(true, &[], &[], &[]).unwrap();
+        assert!(matches!(policy, Some(NetworkPolicy::AllowAll)));
+        assert!(listen.is_none());
+    }
+
+    #[test]
+    fn net_policy_port_with_net_sets_listen() {
+        let (policy, listen) = parse_net_policy(true, &[], &[], &[8080]).unwrap();
+        assert!(matches!(policy, Some(NetworkPolicy::AllowAll)));
+        assert!(listen.is_some());
+    }
+
+    #[test]
+    fn net_policy_port_with_allow_list_sets_listen() {
+        let (policy, listen) =
+            parse_net_policy(false, &["example.com".into()], &[], &[8080]).unwrap();
+        assert!(matches!(policy, Some(NetworkPolicy::AllowList(_))));
+        assert!(listen.is_some());
+    }
+
+    #[test]
+    fn net_policy_port_without_net_is_rejected() {
+        // --port alone would be a silent no-op (hostnet is only registered
+        // when a policy is present), so it must be an error, not accepted.
+        let err = parse_net_policy(false, &[], &[], &[8080]).unwrap_err();
+        assert!(err.contains("--port requires networking"), "got: {err}");
     }
 }

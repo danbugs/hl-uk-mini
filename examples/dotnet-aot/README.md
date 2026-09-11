@@ -21,8 +21,7 @@ The project file (`Hello.csproj`) must enable AOT compilation:
 
 Build dependencies (Alpine): `clang gcc musl-dev zlib-dev`
 
-**Note:** AOT binaries on Alpine link against musl.  The dotnet-aot rootfs
-includes the musl dynamic linker.
+**Note:** AOT binaries on Alpine link against musl.  The dotnet-aot rootfs includes the musl dynamic linker.
 
 Run it by mounting the publish directory:
 

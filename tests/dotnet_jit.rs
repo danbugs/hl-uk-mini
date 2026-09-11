@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use common::{hluk_with_stdin_scratch, require_rootfs, snapshot_dir};
 use hyperlight_unikraft::{
-    Exec, OciTag, SNAPSHOT_TAG, Snapshot, create_sandbox, init, restore, run,
+    Exec, Mount, NetworkPolicy, OciTag, SNAPSHOT_TAG, Snapshot, create_sandbox, init, restore, run,
 };
 
 #[test]
@@ -155,5 +155,75 @@ fn dotnet_jit_env_vars() {
     assert!(
         output.contains("GREETING=hi there"),
         "expected GREETING=hi there, got: {output:?}"
+    );
+}
+
+#[test]
+fn dotnet_jit_fs() {
+    let rootfs = require_rootfs("dotnet-jit");
+    let mount_dir = std::env::temp_dir().join(format!("hluk-dotnet-jit-fs-{}", std::process::id()));
+    std::fs::create_dir_all(&mount_dir).unwrap();
+
+    let mounts = vec![Mount::rw(&mount_dir, "/mnt/host")];
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 768, mounts, None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/dotnet-jit/FsOps.cs");
+    run(&mut sandbox, Exec::File(script)).unwrap();
+    let output = cfg.drain_output();
+
+    assert!(
+        output.contains("read-back: hello from dotnet"),
+        "expected FsOps.cs to read back its write, got: {output:?}",
+    );
+    assert!(
+        output.contains("line-count: 3") && output.contains("fs-ops-done"),
+        "expected FsOps.cs to finish, got: {output:?}",
+    );
+    // The write landed on the host side of the mount.
+    assert!(mount_dir.join("dotnet_fs.txt").exists());
+
+    let _ = std::fs::remove_dir_all(&mount_dir);
+}
+
+#[test]
+fn dotnet_jit_threading() {
+    let rootfs = require_rootfs("dotnet-jit");
+    let (usandbox, cfg) =
+        create_sandbox(&Some(rootfs), &None, 768, Vec::new(), None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/dotnet-jit/Threads.cs");
+    run(&mut sandbox, Exec::File(script)).unwrap();
+    let output = cfg.drain_output();
+
+    assert!(
+        output.contains("sum-of-squares: 140"),
+        "expected Task fan-out result 140, got: {output:?}",
+    );
+    assert!(
+        output.contains("thread-counter: 4") && output.contains("threads-done"),
+        "expected 4 threads to increment the counter, got: {output:?}",
+    );
+}
+
+#[test]
+fn dotnet_jit_http_get() {
+    let rootfs = require_rootfs("dotnet-jit");
+    let (usandbox, cfg) = create_sandbox(
+        &Some(rootfs),
+        &None,
+        768,
+        Vec::new(),
+        Some(NetworkPolicy::AllowAll),
+        None,
+    )
+    .unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/dotnet-jit/HttpGet.cs");
+    run(&mut sandbox, Exec::File(script)).unwrap();
+    let output = cfg.drain_output();
+
+    assert!(
+        output.contains("Status: 200"),
+        "expected HttpGet.cs to get Status: 200, got: {output:?}",
     );
 }

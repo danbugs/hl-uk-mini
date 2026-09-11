@@ -1,15 +1,10 @@
 # Supply Chain Attack Demo — Mini Shai-Hulud
 
-A safe, educational reproduction of the
-[Mini Shai-Hulud](https://thehackernews.com/2026/05/mini-shai-hulud-worm-compromises.html)
-supply chain attack (TeamPCP, May 2026), run inside a Hyperlight micro-VM with
-`hluk`.
+A safe, educational reproduction of the [Mini Shai-Hulud](https://thehackernews.com/2026/05/mini-shai-hulud-worm-compromises.html) supply chain attack (TeamPCP, May 2026), run inside a Hyperlight micro-VM with `hluk`.
 
 ## Background
 
-Mini Shai-Hulud compromised 500+ packages across npm, PyPI, and PHP — including
-TanStack, Mistral AI, Guardrails AI, and AntV — affecting 518M+ cumulative
-downloads. The payload:
+Mini Shai-Hulud compromised 500+ packages across npm, PyPI, and PHP — including TanStack, Mistral AI, Guardrails AI, and AntV — affecting 518M+ cumulative downloads. The payload:
 
 1. Steals credentials — SSH keys, AWS creds, `.env` files, 80+ env vars
 2. Probes cloud metadata — AWS IMDS, Azure IMDS, GCP metadata (169.254.169.254)
@@ -19,18 +14,13 @@ downloads. The payload:
 
 ## The demo
 
-A typosquatted package (`reqeusts` instead of `requests`) carries a simulated
-version of this payload. A victim app imports it — triggering the stealer — and
-then does legitimate work: reads input from the workspace, fetches from
-`example.com`, writes output.
+A typosquatted package (`reqeusts` instead of `requests`) carries a simulated version of this payload. A victim app imports it — triggering the stealer — and then does legitimate work: reads input from the workspace, fetches from `example.com`, writes output.
 
 Two runs, same code:
 
-**Bare metal** — credentials stolen, C2 exfiltration sent, persistence
-installed, cloud metadata probed. Legitimate work also succeeds.
+**Bare metal** — credentials stolen, C2 exfiltration sent, persistence installed, cloud metadata probed. Legitimate work also succeeds.
 
-**Hyperlight micro-VM** (`--mount ./guest:/host --net-allow example.com`) —
-legitimate work succeeds, every attack phase is blocked:
+**Hyperlight micro-VM** (`--mount ./guest:/host --net-allow example.com`) — legitimate work succeeds, every attack phase is blocked:
 
 | Phase | What happens | Why |
 |---|---|---|
@@ -40,20 +30,17 @@ legitimate work succeeds, every attack phase is blocked:
 | C2 exfiltration | 127.0.0.1:8080 → BLOCKED (`Errno 13`) | `--net-allow`/`--net-block` also block loopback (127.0.0.0/8, ::1). |
 | Persistence | `~/.claude/settings.json`, `~/.bashrc` → BLOCKED | Host dotfiles are outside the mount; the guest ramfs is destroyed on exit. |
 
-The isolation is hardware-enforced: the guest runs in its own VM address space,
-not a shared-kernel sandbox.
+The isolation is hardware-enforced: the guest runs in its own VM address space, not a shared-kernel sandbox.
 
 ## Running the demo
 
-Everything is driven by the demo's `Justfile`. Build the python rootfs once from
-the repo root (`just build-rootfs python`); the demo builds `hluk` for you.
+Everything is driven by the demo's `Justfile`. Build the python rootfs once from the repo root (`just build-rootfs python`); the demo builds `hluk` for you.
 
 Linux only (KVM for the VM, Docker to build the rootfs).
 
 ### Bare metal (attack succeeds)
 
-Creates a temporary HOME with planted fake secrets, starts a local C2 listener,
-runs the victim app, then cleans everything up.
+Creates a temporary HOME with planted fake secrets, starts a local C2 listener, runs the victim app, then cleans everything up.
 
 ```bash
 cd demos/supply-chain

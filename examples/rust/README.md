@@ -16,9 +16,7 @@ Or with Cargo (add to `.cargo/config.toml`):
 rustflags = ["-C", "target-feature=+crt-static", "-C", "relocation-model=pie"]
 ```
 
-The binary must be position-independent (`relocation-model=pie`) for the
-elfloader.  Static CRT linking (`target-feature=+crt-static`) avoids
-runtime library dependencies in the rootfs.
+The binary must be position-independent (`relocation-model=pie`) for the elfloader.  Static CRT linking (`target-feature=+crt-static`) avoids runtime library dependencies in the rootfs.
 
 Run it by mounting the directory containing the binary:
 

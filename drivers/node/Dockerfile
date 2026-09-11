@@ -1,4 +1,4 @@
-FROM node:21-alpine AS build
+FROM node:22-alpine AS build
 
 RUN apk add --no-cache gcc musl-dev
 

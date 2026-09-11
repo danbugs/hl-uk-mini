@@ -70,6 +70,9 @@ jobs:
       - name: Verify kernel builds from source
         run: just verify-kernel
 
+      - name: Verify native fixture kernel builds from source
+        run: just verify-native-kernel
+
   # ── Guest images (Linux only, shared by every test job) ──────
   # Rootfs images, the conformance image and the compiled test binaries
   # are all Linux build products (Docker + cpio, Linux toolchains).  This

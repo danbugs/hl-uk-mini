@@ -1,7 +1,6 @@
 # Agent Examples
 
-The agent rootfs ships Python 3.12, BusyBox (hush), data-science packages,
-and SSL support for runtime `pip install` via `--net`.
+The agent rootfs ships Python 3.12, BusyBox (hush), data-science packages, and SSL support for runtime `pip install` via `--net`.
 
 ## Prerequisites
 
@@ -59,21 +58,17 @@ hluk snapshot run ../../.snapshots/agent --exec "import numpy; print(numpy.__ver
 
 ## pip install over `--net`
 
-The agent rootfs includes SSL libraries and CA certificates, so pip can
-connect to PyPI over HTTPS when the guest has network access.
+The agent rootfs includes SSL libraries and CA certificates, so pip can connect to PyPI over HTTPS when the guest has network access.
 
 ```bash
 just run agent --net examples/agent/pip_install.py
 ```
 
-This is safe because Hyperlight uses hardware VM isolation — the guest
-runs in its own hardware-enforced address space, not a shared-kernel
-sandbox.
+This is safe because Hyperlight uses hardware VM isolation — the guest runs in its own hardware-enforced address space, not a shared-kernel sandbox.
 
 ## Custom rootfs
 
-The `custom/` directory shows how to extend `python-shell` with additional
-packages. It installs Pydantic and PyYAML via pip:
+The `custom/` directory shows how to extend `python-shell` with additional packages. It installs Pydantic and PyYAML via pip:
 
 ```bash
 # Build the custom rootfs example

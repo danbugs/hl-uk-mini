@@ -488,6 +488,36 @@ pub fn create_sandbox(
     network: Option<NetworkPolicy>,
     listen_ports: Option<ListenPorts>,
 ) -> hyperlight_host::Result<(UninitializedSandbox, GuestConfig)> {
+    create_sandbox_with_kernel(
+        &None,
+        initrd,
+        entry,
+        scratch_mb,
+        mounts,
+        network,
+        listen_ports,
+    )
+}
+
+/// Like [`create_sandbox`], but boots a kernel from `kernel` instead of the
+/// embedded [`KERNEL`] when `Some`.
+///
+/// **Advanced / unsupported.** The embedded kernel is the only combination
+/// this crate is tested against; an external kernel must match the ABI the
+/// host expects (PEB layout, load/base address, and the host-function set the
+/// drivers rely on) or the guest will fault at boot.  Intended for kernel
+/// development — swap in a locally built `elfloader_hyperlight-x86_64` without
+/// rebuilding the host.  `None` uses the embedded kernel (identical to
+/// [`create_sandbox`]).
+pub fn create_sandbox_with_kernel(
+    kernel: &Option<PathBuf>,
+    initrd: &Option<PathBuf>,
+    entry: &Option<String>,
+    scratch_mb: usize,
+    mounts: Vec<Mount>,
+    network: Option<NetworkPolicy>,
+    listen_ports: Option<ListenPorts>,
+) -> hyperlight_host::Result<(UninitializedSandbox, GuestConfig)> {
     let scratch_size = scratch_mb * 1024 * 1024;
     let mut cfg = SandboxConfiguration::default();
     cfg.set_scratch_size(scratch_size);
@@ -499,7 +529,14 @@ pub fn create_sandbox(
     // Permit the guest to touch the MSRs the Unikraft kernel programs
     apply_guest_msrs(&mut cfg)?;
 
-    let mut usandbox = UninitializedSandbox::new(GuestBinary::Buffer(KERNEL.to_vec()), Some(cfg))?;
+    let guest_binary = match kernel {
+        Some(path) => {
+            info!(path = %path.display(), "booting external kernel (advanced)");
+            GuestBinary::FilePath(path.clone())
+        }
+        None => GuestBinary::Buffer(KERNEL.to_vec()),
+    };
+    let mut usandbox = UninitializedSandbox::new(guest_binary, Some(cfg))?;
 
     let (initrd_base, initrd_size) = if let Some(path) = initrd {
         let size = usandbox.map_file_cow(path, INITRD_MAP_BASE)?;
