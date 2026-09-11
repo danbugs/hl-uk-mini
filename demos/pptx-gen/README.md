@@ -47,6 +47,6 @@ Options:
 ## How it works
 
 1. The CLI produces `python-pptx` code — from OpenAI when `OPENAI_API_KEY` is set, otherwise from a built-in template built from the prompt.
-2. `execute_in_sandbox` boots the python-pptx rootfs with `hluk`'s library API (`create_sandbox` → `init` → `run(Exec::Code(...))`), mounting the output directory at `/out`. The code is passed inline; nothing else is written to the guest disk image.
+2. `execute_in_sandbox` boots the python-pptx rootfs with `hluk`'s library API (`SandboxBuilder::from_initrd(...).boot()` → `run(Exec::Code(...))`), mounting the output directory at `/out`. The code is passed inline; nothing else is written to the guest disk image.
 3. The code only *builds* a `Presentation`. A fixed epilogue then saves the last Presentation object to a private path under `/out`, so the generated code can't redirect the output or has to know the destination.
 4. Because `/out` is a real host mount, the `.pptx` appears directly on the host.

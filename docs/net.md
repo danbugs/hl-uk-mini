@@ -43,13 +43,13 @@ This enables intra-guest networking — for example, a server and client can run
 Pass a `NetworkPolicy` when creating a sandbox:
 
 ```rust
-use hyperlight_unikraft::{NetworkPolicy, AllowList, BlockList, ListenPorts};
+use hyperlight_unikraft::{NetworkPolicy, AllowList, BlockList, ListenPorts, SandboxBuilder};
 
 // Full network access (all outbound destinations permitted):
-let (usandbox, _cfg) = create_sandbox(
-    &Some(rootfs), &None, 256, Vec::new(),
-    Some(NetworkPolicy::AllowAll), None,
-)?;
+let (mut sandbox, _cfg) = SandboxBuilder::from_initrd(rootfs)
+    .scratch_mb(256)
+    .network(NetworkPolicy::AllowAll)
+    .boot()?;
 ```
 
 When `None` (the default), no `net_*` host functions are registered and guest socket calls fail.
@@ -129,10 +129,11 @@ The host also learns IPs dynamically: when a `recvfrom` on port 53 returns a DNS
 
 ```rust
 let ports = ListenPorts::from([80, 443]);
-let (usandbox, _cfg) = create_sandbox(
-    &Some(rootfs), &None, 256, Vec::new(),
-    Some(NetworkPolicy::AllowAll), Some(ports),
-)?;
+let (mut sandbox, _cfg) = SandboxBuilder::from_initrd(rootfs)
+    .scratch_mb(256)
+    .network(NetworkPolicy::AllowAll)
+    .listen_ports(ports)
+    .boot()?;
 ```
 
 Ephemeral binds (port 0 — "assign any port") are always allowed.

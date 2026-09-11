@@ -1,6 +1,6 @@
 # Native-kernel test fixture
 
-A **native** Unikraft image for the Hyperlight platform: `helloworld.c`'s `main()` is compiled *directly into the kernel* (no ELF loader, no initrd) — the opposite of the runtime model hluk normally uses (the embedded elfloader kernel + a rootfs CPIO). It exists to prove `create_sandbox_with_kernel` / `hluk run --kernel <path>` can boot a kernel other than the embedded one.
+A **native** Unikraft image for the Hyperlight platform: `helloworld.c`'s `main()` is compiled *directly into the kernel* (no ELF loader, no initrd) — the opposite of the runtime model hluk normally uses (the embedded elfloader kernel + a rootfs CPIO). It exists to prove `SandboxBuilder::from_kernel(...)` / `hluk run --kernel <path>` can boot a kernel other than the embedded one.
 
 `tests/native_kernel.rs` boots this via `init()` and asserts the greeting was captured. Note the different execution model: a native app runs its workload at *boot* (during `init()`/evolve), not on a later `run(Exec)` dispatch, so the test never calls `run()`.
 
