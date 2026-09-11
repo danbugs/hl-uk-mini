@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789148536895,
+  "lastUpdate": 1789161870008,
   "repoUrl": "https://github.com/danbugs/hl-uk-mini",
   "entries": {
     "agent benchmarks": [
@@ -575,6 +575,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "rss/stdlib",
             "value": 28,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danilochiarlone@gmail.com",
+            "name": "Dan Chiarlone",
+            "username": "danbugs"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "55d3e7b363dc3a6a42acc293487b042f608e99c4",
+          "message": "Merge pull request #9 from danbugs/custom-kernel-and-tier2-tests\n\nCustom kernel support, .NET tier-2 tests, and Unikraft platform fixes",
+          "timestamp": "2026-09-11T13:55:04-07:00",
+          "tree_id": "ea0e3c5f41fae60982c33768bf20135bad4c4558",
+          "url": "https://github.com/danbugs/hl-uk-mini/commit/55d3e7b363dc3a6a42acc293487b042f608e99c4"
+        },
+        "date": 1789161867156,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cold/compute",
+            "value": 15757.461,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/hello",
+            "value": 16251.747,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/stdlib",
+            "value": 17032.255,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/compute",
+            "value": 164.894,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/hello",
+            "value": 83.943,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/stdlib",
+            "value": 199.249,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/compute",
+            "value": 32.964,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/hello",
+            "value": 13.616,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/stdlib",
+            "value": 48.62,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/compute",
+            "value": 65.805,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/hello",
+            "value": 55.612,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/stdlib",
+            "value": 58.41,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/compute",
+            "value": 2.88,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/hello",
+            "value": 0.364,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/stdlib",
+            "value": 12.926,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/compute",
+            "value": 64.717,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/hello",
+            "value": 19.691,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/stdlib",
+            "value": 98.3,
+            "unit": "ms"
+          },
+          {
+            "name": "snapshot-size/compute",
+            "value": 875.8,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/hello",
+            "value": 875.8,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/stdlib",
+            "value": 875.8,
+            "unit": "MiB"
+          },
+          {
+            "name": "rss/compute",
+            "value": 28,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/hello",
+            "value": 20,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/stdlib",
+            "value": 32,
             "unit": "MB"
           }
         ]
