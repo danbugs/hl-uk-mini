@@ -58,7 +58,7 @@ let mounts = vec![
     Mount::ro("/data", "/mnt/data"),
 ];
 let (usandbox, _) = create_sandbox(
-    &Some("rootfs.cpio".into()), &None, 256, mounts, false,
+    &Some("rootfs.cpio".into()), &None, 256, mounts, None, None,
 )?;
 let mut sandbox = init(usandbox)?;
 run(&mut sandbox, "open('/mnt/host/out.txt', 'w').write('hello')")?;
