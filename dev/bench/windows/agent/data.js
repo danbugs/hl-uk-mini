@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789089177760,
+  "lastUpdate": 1789148536895,
   "repoUrl": "https://github.com/danbugs/hl-uk-mini",
   "entries": {
     "agent benchmarks": [
@@ -431,6 +431,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "rss/stdlib",
             "value": 33,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danilochiarlone@gmail.com",
+            "name": "danbugs",
+            "username": "danbugs"
+          },
+          "committer": {
+            "email": "danilochiarlone@gmail.com",
+            "name": "danbugs",
+            "username": "danbugs"
+          },
+          "distinct": true,
+          "id": "5e5aa8c5b3e0da73c4d52377eb1bb195e54a46db",
+          "message": "docs(fs): correct create_sandbox example to the 6-arg signature\n\nThe Rust example passed a bare `false` in place of the network policy and\nwas missing the listen-ports argument; create_sandbox takes\n(initrd, entry, scratch_mb, mounts, network, listen_ports).\n\nSigned-off-by: danbugs <danilochiarlone@gmail.com>",
+          "timestamp": "2026-09-11T17:27:09Z",
+          "tree_id": "50ed154778cd7231daaa0f8d5e0b0f8361ae1f18",
+          "url": "https://github.com/danbugs/hl-uk-mini/commit/5e5aa8c5b3e0da73c4d52377eb1bb195e54a46db"
+        },
+        "date": 1789148532518,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cold/compute",
+            "value": 11841.726,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/hello",
+            "value": 12050.487,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/stdlib",
+            "value": 12099.03,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/compute",
+            "value": 105.337,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/hello",
+            "value": 58.193,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/stdlib",
+            "value": 114.461,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/compute",
+            "value": 21.444,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/hello",
+            "value": 9.959,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/stdlib",
+            "value": 36.407,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/compute",
+            "value": 42.306,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/hello",
+            "value": 42.203,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/stdlib",
+            "value": 42.839,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/compute",
+            "value": 2.172,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/hello",
+            "value": 0.24,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/stdlib",
+            "value": 8.997,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/compute",
+            "value": 30.325,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/hello",
+            "value": 13.713,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/stdlib",
+            "value": 56.572,
+            "unit": "ms"
+          },
+          {
+            "name": "snapshot-size/compute",
+            "value": 875.2,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/hello",
+            "value": 875.2,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/stdlib",
+            "value": 875.2,
+            "unit": "MiB"
+          },
+          {
+            "name": "rss/compute",
+            "value": 28,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/hello",
+            "value": 20,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/stdlib",
+            "value": 28,
             "unit": "MB"
           }
         ]
