@@ -1,5 +1,5 @@
 /*
- * hl_py.h — shared CPython driver core for hl_pydriver and hl_agentdriver.
+ * hl_py.h — shared CPython driver core for hl_pydriver and hl_pywarmdriver.
  *
  * The agent driver is the python driver plus a boot-time pre-warm of heavy
  * imports; everything else — FS_BASE save/restore, the env→os.environ bridge,

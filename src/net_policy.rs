@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Hyperlight Authors.
+
 //! Network access policy — controls which destinations a guest can reach.
 //!
 //! ## Policy variants

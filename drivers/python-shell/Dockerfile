@@ -1,8 +1,9 @@
-# Slim agent rootfs: Python 3.12 + BusyBox (hush) + SSL for pip install.
+# python-shell rootfs: Python 3.12 + BusyBox (hush) + SSL for pip install.
 #
 # Lightweight rootfs (~50MB CPIO) with no pre-installed data science
-# packages.  SSL support (libssl + CA certs) enables runtime package
-# installation via `pip install` when the guest runs with --net.
+# packages — the general Python + shell base other images build on.  SSL
+# support (libssl + CA certs) enables runtime package installation via
+# `pip install` when the guest runs with --net.
 #
 # Pin to bookworm (glibc 2.36) — newer Debian ships glibc 2.41 which
 # uses syscalls Unikraft doesn't support yet.
@@ -22,16 +23,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libstdc++6 ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Preserve directory layout so #include "../hl_fc.h" resolves
+# Headers live alongside the driver in /src/drivers/ so #include "hl_fc.h" resolves
 COPY drivers/hl_fc.h /src/drivers/hl_fc.h
 COPY drivers/hl_env.h /src/drivers/hl_env.h
 COPY drivers/hl_driver.h /src/drivers/hl_driver.h
 COPY drivers/hl_py.h /src/drivers/hl_py.h
-COPY drivers/agent/hl_agentdriver.c /src/drivers/agent/hl_agentdriver.c
+COPY drivers/hl_pywarmdriver.c /src/drivers/hl_pywarmdriver.c
 
 RUN gcc -O2 -Wall -Wextra -Wno-unused-parameter \
         $(python3-config --cflags --embed) \
-        -o /hl_agentdriver /src/drivers/agent/hl_agentdriver.c \
+        -o /hl_pywarmdriver /src/drivers/hl_pywarmdriver.c \
         $(python3-config --ldflags --embed)
 
 # No-op lsb_release stub — pip's distro detection execs this; without
@@ -103,6 +104,6 @@ COPY drivers/python/sitecustomize.py /usr/local/lib/python3.12/sitecustomize.py
 COPY --from=hluk-busybox /lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1
 COPY --from=hluk-busybox /busybox-root/ /
 
-# Agent driver + lsb_release stub (must be in /bin — guest PATH is /bin)
-COPY --from=build /hl_agentdriver /usr/local/bin/hl_agentdriver
+# Pre-warm driver + lsb_release stub (must be in /bin — guest PATH is /bin)
+COPY --from=build /hl_pywarmdriver /usr/local/bin/hl_pywarmdriver
 COPY --from=build /usr/bin/lsb_release /bin/lsb_release

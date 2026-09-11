@@ -28,14 +28,14 @@ Nothing is pushed to crates.io as part of this — that is deliberate.
   `x86_64-pc-windows-msvc`, plus generated changelog notes.
 - **GHCR** (`ghcr.io/<owner>/<repo>/…`):
   - `<runtime>` — one package per runtime (`python`, `node`, `agent`,
-    `agent-slim`, `bash`, `c`, `go`, `rust`, `dotnet-aot`, `dotnet-jit`,
+    `python-shell`, `bash`, `c`, `go`, `rust`, `dotnet-aot`, `dotnet-jit`,
     `powershell`), with two tags:
     - `:latest` (+ `:v<version>`) — the rootfs filesystem image; build a custom
       guest `FROM <registry>/<runtime>`.
     - `:initrd` (+ `:initrd-v<version>`) — the runnable CPIO; `just pull-rootfs
       <runtime> <registry>` fetches it into `build-elfloader/` to `hluk run` —
       no local build.
-  - `busybox` — the shared BusyBox base at `:latest` (bash/agent/agent-slim
+  - `busybox` — the shared BusyBox base at `:latest` (bash/agent/python-shell
     build on it),
   - `kernel` — the Unikraft elfloader kernel at `/kernel`,
   - `hello-urunc` — a urunc-runnable OCI image (see `demos/urunc/`).

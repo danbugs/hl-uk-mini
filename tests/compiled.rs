@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Hyperlight Authors.
+
 //! Tests for compiled-language runtimes: C, C++, Rust, Go, .NET AOT.
 //!
 //! The guest binaries are Linux ELF executables built from `examples/`

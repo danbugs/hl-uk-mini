@@ -1,4 +1,4 @@
-# agent-framework-local rootfs — extends agent-slim with agent-framework-core,
+# agent-framework-local rootfs — extends python-shell with agent-framework-core,
 # a source-built llama-cpp-python, and a small GGUF model baked in. Inference
 # runs entirely in-guest: no network, no API keys.
 #
@@ -13,7 +13,7 @@
 #         (compiles llama.cpp + downloads a ~400 MB model; takes a while)
 # Run:    hluk run --initrd build-elfloader/agent-fw-local-rootfs.cpio \
 #             --scratch-mb 1536 examples/agent-framework/local.py
-FROM hluk-agent-slim-rootfs:latest AS base
+FROM hluk-python-shell-rootfs:latest AS base
 
 FROM python:3.12-slim-bookworm AS installer
 RUN apt-get update && apt-get install -y --no-install-recommends git build-essential cmake \

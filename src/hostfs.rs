@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Hyperlight Authors.
+
 //! Host filesystem — `fs_*` host functions backed by [`cap_std::fs::Dir`].
 //!
 //! Every mount is a capability: a `Dir` opened once on the host path,

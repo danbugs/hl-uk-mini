@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Hyperlight Authors.
+
 //! Host networking — `net_*` host functions backed by [`rustix`].
 //!
 //! The guest driver (`hostsock.c`) speaks the POSIX socket API, one host

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The Hyperlight Authors.
 mod common;
 
 use common::{UNUSED_PORT, host_ip, net_probe, require_rootfs};

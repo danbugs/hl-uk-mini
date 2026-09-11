@@ -1,12 +1,12 @@
 # PPTX generator demo — LLM-written python-pptx code, run inside a Hyperlight VM.
 #
-# just rootfs   - Build the python-pptx rootfs (Docker; agent-slim must exist)
+# just rootfs   - Build the python-pptx rootfs (Docker; python-shell must exist)
 # just build    - Build the Rust CLI
 # just run      - Generate a presentation (needs OPENAI_API_KEY)
 # just dry-run  - Print the generated code without running it
 #
-# Linux only (KVM + Docker). Build the agent-slim base once from the repo root:
-#   just build-rootfs agent-slim
+# Linux only (KVM + Docker). Build the python-shell base once from the repo root:
+#   just build-rootfs python-shell
 
 root_dir := justfile_directory() / ".." / ".."
 rootfs   := root_dir / "build-elfloader" / "pptx-rootfs.cpio"

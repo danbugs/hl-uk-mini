@@ -17,7 +17,7 @@ the finished file — no base64 round-trip needed.
 
 ## Prerequisites
 
-- The `agent-slim` base rootfs: `just build-rootfs agent-slim` (from the repo root)
+- The `python-shell` base rootfs: `just build-rootfs python-shell` (from the repo root)
 - Optional: an OpenAI API key, to generate the slide code with an LLM instead of
   the built-in template
 

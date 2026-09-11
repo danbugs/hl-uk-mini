@@ -71,6 +71,6 @@ that's a guest-capability limit, not a config to tune.
   that `llama-cpp-python` imports transitively but this example never uses; they
   are ignored when the real modules are present.
 
-Both rootfses extend `agent-slim` (build it first with
-`just build-rootfs agent-slim`). The local build compiles llama.cpp and
+Both rootfses extend `python-shell` (build it first with
+`just build-rootfs python-shell`). The local build compiles llama.cpp and
 downloads a ~400 MB model, so it takes several minutes.

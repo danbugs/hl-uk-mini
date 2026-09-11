@@ -1,7 +1,7 @@
 # Shared BusyBox base image (hluk-busybox).
 #
 # A NOMMU/PIE BusyBox built against Alpine/musl, used as the minimal userland
-# for the bash, agent and agent-slim rootfs.  Building it here once — rather
+# for the bash, agent and python-shell rootfs.  Building it here once — rather
 # than repeating the ~40-line build in each of those Dockerfiles — keeps the
 # BusyBox version, config and applet set in a single place.  Consumers do:
 #     COPY --from=hluk-busybox /lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1
