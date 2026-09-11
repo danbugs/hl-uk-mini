@@ -1,11 +1,8 @@
 # Kernel
 
-The embedded kernel binary (`elfloader_hyperlight-x86_64`) is a Unikraft
-app-elfloader built against the `plat-hyperlight-cleanup` branch.
+The embedded kernel binary (`elfloader_hyperlight-x86_64`) is a Unikraft app-elfloader built against the `plat-hyperlight-cleanup` branch.
 
-Users don't need to build this — it's embedded in the `hluk` binary via
-`include_bytes!`. Only the rootfs (built with `just build-rootfs`) needs
-to be produced by users.
+Users don't need to build this — it's embedded in the `hluk` binary via `include_bytes!`. Only the rootfs (built with `just build-rootfs`) needs to be produced by users.
 
 ## Configuration
 
@@ -32,8 +29,7 @@ just build-kernel
 just verify-kernel
 ```
 
-The build is reproducible — `CONFIG_LIBUKLIBID_INFO_COMPILEDATE=n` in the
-defconfig ensures the same source always produces the same binary.
+The build is reproducible — `CONFIG_LIBUKLIBID_INFO_COMPILEDATE=n` in the defconfig ensures the same source always produces the same binary.
 
 <!-- TODO: upstream kernel changes to kraft so this can be built with
      `kraft build --plat hyperlight --arch x86_64` without manual patching. -->

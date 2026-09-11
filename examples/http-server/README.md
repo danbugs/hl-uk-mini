@@ -1,7 +1,6 @@
 # HTTP server in the guest
 
-Three tiny HTTP servers that run **inside** a Hyperlight micro-VM and are
-reachable from the host on `http://127.0.0.1:8080`:
+Three tiny HTTP servers that run **inside** a Hyperlight micro-VM and are reachable from the host on `http://127.0.0.1:8080`:
 
 | Server | Runtime | Rootfs |
 |--------|---------|--------|
@@ -11,15 +10,10 @@ reachable from the host on `http://127.0.0.1:8080`:
 
 ## How it works
 
-`hluk` backs the guest's POSIX sockets with host sockets (one syscall per host
-call). When the guest binds `0.0.0.0:8080` and accepts, the accept happens on
-the host socket, so a `curl http://127.0.0.1:8080` on the host reaches the
-server running in the VM. Two flags are needed:
+`hluk` backs the guest's POSIX sockets with host sockets (one syscall per host call). When the guest binds `0.0.0.0:8080` and accepts, the accept happens on the host socket, so a `curl http://127.0.0.1:8080` on the host reaches the server running in the VM. Two flags are needed:
 
 - `--port 8080` — allows the guest to bind that port (the listen-port allowlist).
-- `--net` — registers the socket layer (`AllowAll`, which also permits loopback
-  so host↔guest works). Without a network policy the socket host functions are
-  not registered.
+- `--net` — registers the socket layer (`AllowAll`, which also permits loopback so host↔guest works). Without a network policy the socket host functions are not registered.
 
 The server runs until you stop it (Ctrl-C), like any server.
 
@@ -47,8 +41,7 @@ curl http://127.0.0.1:8080/         # Hello from Express on Hyperlight!
 
 ## Kestrel (.NET)
 
-Kestrel is a compiled binary, so it's dispatched by guest path with `--exec`
-(there is no host-side script to read):
+Kestrel is a compiled binary, so it's dispatched by guest path with `--exec` (there is no host-side script to read):
 
 ```bash
 just build-rootfs http-kestrel examples/http-server/kestrel/Dockerfile

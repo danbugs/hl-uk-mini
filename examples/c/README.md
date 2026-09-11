@@ -6,9 +6,7 @@ Compile a static-PIE binary with musl:
 gcc -O2 -Wall -static-pie -fPIE -o hello hello.c
 ```
 
-The binary must be position-independent (`-fPIE -static-pie`) for the
-elfloader.  Static linking (`-static-pie`) avoids runtime library
-dependencies in the rootfs.
+The binary must be position-independent (`-fPIE -static-pie`) for the elfloader.  Static linking (`-static-pie`) avoids runtime library dependencies in the rootfs.
 
 Run it by mounting the directory containing the binary:
 

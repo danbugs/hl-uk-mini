@@ -1,38 +1,24 @@
 # Filesystem
 
-Unikraft guests on Hyperlight have two filesystem layers: a **guest
-filesystem** (in-memory, from the initrd) and an optional **host
-filesystem** (pass-through to the host via hypercalls).
+Unikraft guests on Hyperlight have two filesystem layers: a **guest filesystem** (in-memory, from the initrd) and an optional **host filesystem** (pass-through to the host via hypercalls).
 
 ## Guest filesystem
 
-At boot the kernel mounts a RAM filesystem (`ramfs`) at `/` and
-extracts the CPIO initrd over it.  The result is a fully writable
-in-memory filesystem containing the guest's root — Python stdlib,
-shared libraries, `/bin`, `/tmp`, etc.
+At boot the kernel mounts a RAM filesystem (`ramfs`) at `/` and extracts the CPIO initrd over it.  The result is a fully writable in-memory filesystem containing the guest's root — Python stdlib, shared libraries, `/bin`, `/tmp`, etc.
 
-Writes go to ramfs (pure guest memory — no host calls, no disk I/O).
-Data is ephemeral: it disappears when the VM shuts down or is restored
-from a snapshot.  The guest filesystem is always read-write; there is
-no read-only option for it.
+Writes go to ramfs (pure guest memory — no host calls, no disk I/O). Data is ephemeral: it disappears when the VM shuts down or is restored from a snapshot.  The guest filesystem is always read-write; there is no read-only option for it.
 
 ### Example
 
-[`examples/python/guest_fs.py`](../examples/python/guest_fs.py)
-exercises the guest filesystem: writes to `/tmp`, reads back, creates
-nested directories, renames, lists entries, and cleans up.
+[`examples/python/guest_fs.py`](../examples/python/guest_fs.py) exercises the guest filesystem: writes to `/tmp`, reads back, creates nested directories, renames, lists entries, and cleans up.
 
 ## Host filesystem (`hostfs`)
 
-`hostfs` exposes a host directory inside the guest.  It is backed by
-Hyperlight host functions and sandboxed by
-[`cap-std`](https://docs.rs/cap-std).
+`hostfs` exposes a host directory inside the guest.  It is backed by Hyperlight host functions and sandboxed by [`cap-std`](https://docs.rs/cap-std).
 
 ### Usage
 
-Mount a host directory with `--mount`.  The format is
-`HOST_PATH:GUEST_PATH[:ro]` — the host path comes first, the guest
-mount point second (same as `docker -v`):
+Mount a host directory with `--mount`.  The format is `HOST_PATH:GUEST_PATH[:ro]` — the host path comes first, the guest mount point second (same as `docker -v`):
 
 ```sh
 # Read-write: host /tmp/share appears at /mnt/host in the guest
@@ -82,13 +68,9 @@ open("/mnt/host/foo.txt")
     → copy to userspace
 ```
 
-Each mount corresponds to a `cap_std::fs::Dir` on the host side.  The
-guest kernel injects a mount index into every host call so the host
-routes operations to the correct directory.
+Each mount corresponds to a `cap_std::fs::Dir` on the host side.  The guest kernel injects a mount index into every host call so the host routes operations to the correct directory.
 
-Reads and writes are transferred in chunks (32 KB by default).  The
-guest queries the chunk size from the host at mount time via
-`GetHostFsChunkSize`.
+Reads and writes are transferred in chunks (32 KB by default).  The guest queries the chunk size from the host at mount time via `GetHostFsChunkSize`.
 
 ### Supported operations
 
@@ -109,42 +91,25 @@ guest queries the chunk size from the host at mount time via
 
 ### Read-only mounts
 
-Passing `:ro` sets `MNT_RDONLY` on the VFS mount.  The kernel rejects
-writes at the VFS layer (returns `EROFS`) before they reach hostfs.
-The host side also enforces read-only as defense-in-depth.
+Passing `:ro` sets `MNT_RDONLY` on the VFS mount.  The kernel rejects writes at the VFS layer (returns `EROFS`) before they reach hostfs. The host side also enforces read-only as defense-in-depth.
 
 ### Snapshots
 
-When restoring from a snapshot, pass the same `--mount` flags (or
-`Mount` values) that were used when the snapshot was created.  The
-guest kernel's mount table is captured in the snapshot; the mounts
-re-register the host-side functions that serve those mount points.
+When restoring from a snapshot, pass the same `--mount` flags (or `Mount` values) that were used when the snapshot was created.  The guest kernel's mount table is captured in the snapshot; the mounts re-register the host-side functions that serve those mount points.
 
 ### Security
 
-All host filesystem access is sandboxed by
-[`cap-std`](https://docs.rs/cap-std) (capability-based filesystem
-access):
+All host filesystem access is sandboxed by [`cap-std`](https://docs.rs/cap-std) (capability-based filesystem access):
 
-- **Path traversal (`../`)**: blocked.  On Linux 5.6+, `openat2` with
-  `RESOLVE_BENEATH` is kernel-enforced.  On Windows, cap-std uses
-  component-by-component resolution that rejects escapes.
-- **Symlink escapes**: blocked.  `RESOLVE_NO_MAGICLINKS` prevents
-  `/proc/self/fd/N`-style escapes on Linux.  Absolute symlink targets
-  are rejected on all platforms.
-- **No ambient filesystem access**: the guest can only reach files
-  inside the mounted host directory.
-- **chmod**: the guest can change permissions on files in the host
-  mount (same as virtio-fs / 9pfs).  Use `:ro` mounts to prevent
-  this.
+- **Path traversal (`../`)**: blocked.  On Linux 5.6+, `openat2` with `RESOLVE_BENEATH` is kernel-enforced.  On Windows, cap-std uses component-by-component resolution that rejects escapes.
+- **Symlink escapes**: blocked.  `RESOLVE_NO_MAGICLINKS` prevents `/proc/self/fd/N`-style escapes on Linux.  Absolute symlink targets are rejected on all platforms.
+- **No ambient filesystem access**: the guest can only reach files inside the mounted host directory.
+- **chmod**: the guest can change permissions on files in the host mount (same as virtio-fs / 9pfs).  Use `:ro` mounts to prevent this.
 
 ### Examples
 
-- [`examples/python/fs_ops.py`](../examples/python/fs_ops.py) —
-  write, read, stat, listdir, mkdir, walk, cleanup on a hostfs mount.
-- [`examples/python/guest_fs.py`](../examples/python/guest_fs.py) —
-  exercises the guest ramfs: mkdir, write, read, stat, rename, listdir,
-  cleanup.
+- [`examples/python/fs_ops.py`](../examples/python/fs_ops.py) — write, read, stat, listdir, mkdir, walk, cleanup on a hostfs mount.
+- [`examples/python/guest_fs.py`](../examples/python/guest_fs.py) — exercises the guest ramfs: mkdir, write, read, stat, rename, listdir, cleanup.
 
 ### Guest vs host filesystem
 

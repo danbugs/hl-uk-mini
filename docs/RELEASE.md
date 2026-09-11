@@ -1,7 +1,6 @@
 # Releasing
 
-Releases are driven by the `version` in the root `Cargo.toml` and cut with three
-workflows in `.github/workflows/`:
+Releases are driven by the `version` in the root `Cargo.toml` and cut with three workflows in `.github/workflows/`:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -11,8 +10,7 @@ workflows in `.github/workflows/`:
 
 ## Cutting a release
 
-1. Bump `version` in `Cargo.toml` on `main` (semver, e.g. `0.2.0`), commit, and
-   push.
+1. Bump `version` in `Cargo.toml` on `main` (semver, e.g. `0.2.0`), commit, and push.
 2. Actions → **Create release** → **Run workflow**. It:
    - validates the version and that the tag doesn't exist,
    - builds `hluk` for Linux and Windows (x86_64),
@@ -24,8 +22,7 @@ Nothing is pushed to crates.io as part of this — that is deliberate.
 
 ## What's published
 
-- **GitHub Release**: `hluk` binaries for `x86_64-unknown-linux-gnu` and
-  `x86_64-pc-windows-msvc`, plus generated changelog notes.
+- **GitHub Release**: `hluk` binaries for `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`, plus generated changelog notes.
 - **GHCR** (`ghcr.io/<owner>/<repo>/…`):
   - `<runtime>` — one package per runtime (`python`, `node`, `agent`,
     `python-shell`, `bash`, `c`, `go`, `rust`, `dotnet-aot`, `dotnet-jit`,
@@ -42,6 +39,4 @@ Nothing is pushed to crates.io as part of this — that is deliberate.
 
 ## crates.io
 
-`hyperlight-unikraft` and `hluk` are the same crate (one `[[bin]]`), so this is a
-single `cargo publish`. Run **Publish to crates.io** manually; it's a dry run
-unless you set `dry_run = false`.
+`hyperlight-unikraft` and `hluk` are the same crate (one `[[bin]]`), so this is a single `cargo publish`. Run **Publish to crates.io** manually; it's a dry run unless you set `dry_run = false`.
