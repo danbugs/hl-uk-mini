@@ -81,6 +81,11 @@ kernel_dir    := root_dir / "kernel"
 kernel_bin    := kernel_dir / "elfloader_hyperlight-x86_64"
 kernel_build  := kernel_dir / ".build"
 
+# Native test-fixture kernel (a C main() compiled into the kernel — no
+# elfloader/initrd), used by tests/native_kernel.rs.
+native_kernel_dir := root_dir / "tests" / "fixtures" / "native-kernel"
+native_kernel_bin := native_kernel_dir / "helloworld-native_hyperlight-x86_64"
+
 # Build the Unikraft elfloader kernel from submodule sources.
 # Uses Docker for reproducible builds — the same binary on every machine.
 # Requires: Docker, and the kernel submodules (git submodule update --init).
@@ -184,6 +189,96 @@ verify-kernel:
 [windows]
 verify-kernel:
     @Write-Error "verify-kernel needs Docker on Linux; run it there."; exit 1
+
+# Build the native test-fixture kernel from source, reproducibly, in the same
+# Docker toolchain as the elfloader kernel.  Sources live in the fixture dir;
+# the app is built at fixed container paths so the binary is deterministic.
+[unix]
+build-native-kernel:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if [ ! -f "{{kernel_dir}}/unikraft/Makefile" ]; then
+        echo "error: kernel submodules not initialised" >&2
+        echo "run: git submodule update --init --recursive" >&2
+        exit 1
+    fi
+
+    echo "==> Building kernel builder image..."
+    docker build -q -t hluk-kernel-builder \
+        -f "{{kernel_dir}}/Dockerfile.build" "{{kernel_dir}}/"
+
+    echo "==> Building native kernel inside Docker (reproducible toolchain)..."
+    docker run --rm \
+        -v "{{kernel_dir}}:/kernel" \
+        -v "{{native_kernel_dir}}:/napp" \
+        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+        hluk-kernel-builder bash -c '
+            set -euo pipefail
+            rm -rf /build
+            mkdir -p /build/app
+            cp /napp/helloworld.c /napp/Makefile.uk /build/app/
+            cp /napp/defconfig /build/app/.config
+            yes "" 2>/dev/null | make -C /kernel/unikraft A=/build/app olddefconfig || true
+            make -C /kernel/unikraft A=/build/app -j$(nproc)
+            cp /build/app/build/helloworld-native_hyperlight-x86_64 /napp/helloworld-native_hyperlight-x86_64
+            chown "$HOST_UID:$HOST_GID" /napp/helloworld-native_hyperlight-x86_64
+        '
+
+    echo "==> Native kernel built: {{native_kernel_bin}}"
+    echo "    sha256: $(sha256sum "{{native_kernel_bin}}" | cut -d' ' -f1)"
+
+[windows]
+build-native-kernel:
+    @Write-Error "build-native-kernel needs Docker on Linux. Build there and commit the fixture binary."; exit 1
+
+# Verify the committed native fixture kernel matches a fresh reproducible build.
+[unix]
+verify-native-kernel:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    committed="$(sha256sum "{{native_kernel_bin}}" | cut -d' ' -f1)"
+
+    if [ ! -f "{{kernel_dir}}/unikraft/Makefile" ]; then
+        echo "error: kernel submodules not initialised" >&2
+        echo "run: git submodule update --init --recursive" >&2
+        exit 1
+    fi
+
+    docker build -q -t hluk-kernel-builder \
+        -f "{{kernel_dir}}/Dockerfile.build" "{{kernel_dir}}/"
+
+    docker run --rm \
+        -v "{{kernel_dir}}:/kernel" \
+        -v "{{native_kernel_dir}}:/napp" \
+        -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+        hluk-kernel-builder bash -c '
+            set -euo pipefail
+            rm -rf /build
+            mkdir -p /build/app
+            cp /napp/helloworld.c /napp/Makefile.uk /build/app/
+            cp /napp/defconfig /build/app/.config
+            yes "" 2>/dev/null | make -C /kernel/unikraft A=/build/app olddefconfig > /dev/null 2>&1 || true
+            make -C /kernel/unikraft A=/build/app -j$(nproc) > /dev/null 2>&1
+            cp /build/app/build/helloworld-native_hyperlight-x86_64 /napp/.native-verify.bin
+            chown "$HOST_UID:$HOST_GID" /napp/.native-verify.bin
+        '
+
+    fresh="$(sha256sum "{{native_kernel_dir}}/.native-verify.bin" | cut -d' ' -f1)"
+    rm -f "{{native_kernel_dir}}/.native-verify.bin"
+    if [ "$committed" = "$fresh" ]; then
+        echo "✓ Native kernel binary matches source (sha256: $committed)"
+    else
+        echo "✗ Native kernel binary does NOT match source" >&2
+        echo "  committed: $committed" >&2
+        echo "  fresh:     $fresh" >&2
+        echo "  Run 'just build-native-kernel' to rebuild." >&2
+        exit 1
+    fi
+
+[windows]
+verify-native-kernel:
+    @Write-Error "verify-native-kernel needs Docker on Linux; run it there."; exit 1
 
 # Clean kernel build artifacts (does not touch the committed binary).
 [unix]
@@ -554,7 +649,7 @@ build-test-bins:
             -o "$bins/go/$src" "{{examples_dir}}/go/$src.go"
     done
     echo "==> .NET AOT"
-    for proj in dotnet-aot dotnet-aot-envvars; do
+    for proj in dotnet-aot dotnet-aot-envvars dotnet-aot-caps; do
         dotnet publish "{{examples_dir}}/$proj" -c Release -r linux-musl-x64 -v q --nologo \
             -o "$bins/dotnet-aot"
     done
