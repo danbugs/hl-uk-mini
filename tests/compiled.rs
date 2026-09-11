@@ -205,3 +205,43 @@ fn dotnet_aot_snapshot_round_trip() {
 fn dotnet_aot_env_vars() {
     assert_env(&run_bins("dotnet-aot", 256, ENV, &["/mnt/bin/EnvVars"]));
 }
+
+#[test]
+fn dotnet_aot_capabilities() {
+    // Guest filesystem (ramfs) + host filesystem (a --mount dir) + concurrency
+    // (Task fan-out) in a prebuilt native-AOT executable.  The binary comes
+    // from BIN_MOUNT; it writes to guest /tmp and to a second, writable host
+    // mount at /mnt/out, which we verify on the host side.
+    let rootfs = require_rootfs("dotnet-aot");
+    let out_dir = std::env::temp_dir().join(format!("hluk-dotnet-aot-caps-{}", std::process::id()));
+    std::fs::create_dir_all(&out_dir).unwrap();
+
+    let mounts = vec![
+        Mount::rw(require_bins("dotnet-aot"), BIN_MOUNT),
+        Mount::rw(&out_dir, "/mnt/out"),
+    ];
+    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, mounts, None, None).unwrap();
+    let mut sandbox = init(usandbox).unwrap();
+    run(&mut sandbox, "/mnt/bin/Caps").unwrap();
+    let output = cfg.drain_output();
+
+    assert!(
+        output.contains("guest-fs-read-back: aot-guest-fs-data"),
+        "expected AOT Caps to read back its guest-fs (ramfs) write, got: {output:?}"
+    );
+    assert!(
+        output.contains("host-fs-read-back: aot-host-fs-data"),
+        "expected AOT Caps to read back its host-fs write, got: {output:?}"
+    );
+    assert!(
+        output.contains("sum-of-squares: 140") && output.contains("aot-caps-done"),
+        "expected AOT Caps concurrency result, got: {output:?}"
+    );
+    // The host-fs write went through hostfs and landed on the host side.
+    assert!(
+        out_dir.join("aot_host_fs.txt").exists(),
+        "expected AOT Caps host-fs write to appear on the host mount"
+    );
+
+    let _ = std::fs::remove_dir_all(&out_dir);
+}
