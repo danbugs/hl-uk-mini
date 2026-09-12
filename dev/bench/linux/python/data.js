@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789160778405,
+  "lastUpdate": 1789196347975,
   "repoUrl": "https://github.com/danbugs/hl-uk-mini",
   "entries": {
     "python benchmarks": [
@@ -1121,6 +1121,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "parallel-exec/stdlib",
             "value": 212.685,
+            "unit": "ms"
+          },
+          {
+            "name": "snapshot-size/compute",
+            "value": 78.3,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/hello",
+            "value": 78.3,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/stdlib",
+            "value": 78.3,
+            "unit": "MiB"
+          },
+          {
+            "name": "rss/compute",
+            "value": 18,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/hello",
+            "value": 18,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/stdlib",
+            "value": 22,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danilochiarlone@gmail.com",
+            "name": "Dan Chiarlone",
+            "username": "danbugs"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6deccb111e1cbbb485dc79300f70f5f4b3ee875c",
+          "message": "Merge pull request #10 from danbugs/sandbox-builder-boot-api\n\nSandboxBuilder + boot() as the library API; CHANGELOG-driven release notes",
+          "timestamp": "2026-09-11T23:57:36-07:00",
+          "tree_id": "9902f340cc8a8a76ee16123c29e3ec3c981c5ded",
+          "url": "https://github.com/danbugs/hl-uk-mini/commit/6deccb111e1cbbb485dc79300f70f5f4b3ee875c"
+        },
+        "date": 1789196345891,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cold/compute",
+            "value": 277.095,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/hello",
+            "value": 274.536,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/stdlib",
+            "value": 391.201,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/compute",
+            "value": 14.692,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/hello",
+            "value": 8.642,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/stdlib",
+            "value": 143.66,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/compute",
+            "value": 6.369,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/hello",
+            "value": 2.983,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/stdlib",
+            "value": 125.262,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/compute",
+            "value": 0.349,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/hello",
+            "value": 0.344,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/stdlib",
+            "value": 0.551,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/compute",
+            "value": 2.49,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/hello",
+            "value": 0.097,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/stdlib",
+            "value": 44.273,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/compute",
+            "value": 10.874,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/hello",
+            "value": 5.065,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/stdlib",
+            "value": 216.206,
             "unit": "ms"
           },
           {
