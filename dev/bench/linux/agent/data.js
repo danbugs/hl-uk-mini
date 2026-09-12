@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789161154087,
+  "lastUpdate": 1789196736994,
   "repoUrl": "https://github.com/danbugs/hl-uk-mini",
   "entries": {
     "agent benchmarks": [
@@ -992,6 +992,150 @@ window.BENCHMARK_DATA = {
           {
             "name": "snapshot-size/stdlib",
             "value": 875.8,
+            "unit": "MiB"
+          },
+          {
+            "name": "rss/compute",
+            "value": 28,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/hello",
+            "value": 28,
+            "unit": "MB"
+          },
+          {
+            "name": "rss/stdlib",
+            "value": 30,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danilochiarlone@gmail.com",
+            "name": "Dan Chiarlone",
+            "username": "danbugs"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6deccb111e1cbbb485dc79300f70f5f4b3ee875c",
+          "message": "Merge pull request #10 from danbugs/sandbox-builder-boot-api\n\nSandboxBuilder + boot() as the library API; CHANGELOG-driven release notes",
+          "timestamp": "2026-09-11T23:57:36-07:00",
+          "tree_id": "9902f340cc8a8a76ee16123c29e3ec3c981c5ded",
+          "url": "https://github.com/danbugs/hl-uk-mini/commit/6deccb111e1cbbb485dc79300f70f5f4b3ee875c"
+        },
+        "date": 1789196735120,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "cold/compute",
+            "value": 6630.711,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/hello",
+            "value": 6558.041,
+            "unit": "ms"
+          },
+          {
+            "name": "cold/stdlib",
+            "value": 6593.885,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/compute",
+            "value": 22.72,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/hello",
+            "value": 9.085,
+            "unit": "ms"
+          },
+          {
+            "name": "cold-snap/stdlib",
+            "value": 36.316,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/compute",
+            "value": 8.084,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/hello",
+            "value": 3.353,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-restore/stdlib",
+            "value": 18.156,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/compute",
+            "value": 1.082,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/hello",
+            "value": 1.03,
+            "unit": "ms"
+          },
+          {
+            "name": "restore-cost/stdlib",
+            "value": 1.271,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/compute",
+            "value": 2.039,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/hello",
+            "value": 0.099,
+            "unit": "ms"
+          },
+          {
+            "name": "warm-stateful/stdlib",
+            "value": 8.865,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/compute",
+            "value": 14.175,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/hello",
+            "value": 5.731,
+            "unit": "ms"
+          },
+          {
+            "name": "parallel-exec/stdlib",
+            "value": 26.298,
+            "unit": "ms"
+          },
+          {
+            "name": "snapshot-size/compute",
+            "value": 875.9,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/hello",
+            "value": 875.9,
+            "unit": "MiB"
+          },
+          {
+            "name": "snapshot-size/stdlib",
+            "value": 875.9,
             "unit": "MiB"
           },
           {
