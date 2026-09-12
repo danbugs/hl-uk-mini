@@ -3,39 +3,23 @@
 mod common;
 
 use common::require_rootfs;
-use hyperlight_unikraft::{Exec, create_sandbox, init, run};
+use hyperlight_unikraft::{Exec, SandboxBuilder, run};
 
 #[test]
 fn exec_file_not_found() {
     let rootfs = require_rootfs("python");
-    let (usandbox, _cfg) =
-        create_sandbox(&Some(rootfs), &None, 256, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, _cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .boot()
+        .unwrap();
     let result = run(&mut sandbox, Exec::File("/nonexistent/script.py".into()));
     assert!(result.is_err());
 }
 
 #[test]
-fn create_sandbox_missing_initrd() {
-    let result = create_sandbox(
-        &Some("/nonexistent/rootfs.cpio".into()),
-        &None,
-        256,
-        Vec::new(),
-        None,
-        None,
-    );
+fn boot_missing_initrd() {
+    let result = SandboxBuilder::from_initrd("/nonexistent/rootfs.cpio").boot();
     assert!(result.is_err());
-}
-
-#[test]
-fn create_sandbox_no_initrd() {
-    // Should succeed — just no rootfs mapped.
-    let (usandbox, cfg) = create_sandbox(&None, &None, 256, Vec::new(), None, None).unwrap();
-    assert_eq!(cfg.initrd_base, 0);
-    assert_eq!(cfg.initrd_size, 0);
-    // Don't evolve — no driver to run without an initrd.
-    drop(usandbox);
 }
 
 #[test]

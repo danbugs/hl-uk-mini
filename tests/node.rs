@@ -7,16 +7,17 @@ use std::sync::Arc;
 
 use common::{hluk_with_stdin_scratch, require_rootfs, snapshot_dir};
 use hyperlight_unikraft::{
-    Exec, Mount, NetworkPolicy, OciTag, SNAPSHOT_TAG, Snapshot, create_sandbox, init, restore, run,
+    Exec, Mount, NetworkPolicy, OciTag, SNAPSHOT_TAG, SandboxBuilder, Snapshot, run,
 };
 
 #[test]
 fn node_exec_file() {
     let rootfs = require_rootfs("node");
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/node/hello.js");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(512)
+        .boot()
+        .unwrap();
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -28,9 +29,10 @@ fn node_exec_file() {
 #[test]
 fn node_inline_code() {
     let rootfs = require_rootfs("node");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(512)
+        .boot()
+        .unwrap();
     run(&mut sandbox, "console.log('hluk-node-ok')").unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -43,16 +45,17 @@ fn node_inline_code() {
 fn node_snapshot_round_trip() {
     let rootfs = require_rootfs("node");
     let snap_dir = snapshot_dir("node-snap");
-    let (usandbox, _cfg) =
-        create_sandbox(&Some(rootfs.clone()), &None, 512, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, _cfg) = SandboxBuilder::from_initrd(rootfs.clone())
+        .scratch_mb(512)
+        .boot()
+        .unwrap();
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
 
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
-    let (mut sandbox, cfg2) = restore(snap, Vec::new(), None, None).unwrap();
+    let (mut sandbox, cfg2) = SandboxBuilder::from_snapshot(snap).boot().unwrap();
     run(&mut sandbox, "console.log('restored-node-ok')").unwrap();
     let output = cfg2.drain_output();
     assert!(
@@ -85,9 +88,10 @@ fn node_stdin_piped() {
 fn node_async_timers() {
     let rootfs = require_rootfs("node");
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/node/async_timers.js");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(512)
+        .boot()
+        .unwrap();
     let code = std::fs::read_to_string(&script).unwrap();
     run(&mut sandbox, &*code).unwrap();
     let output = cfg.drain_output();
@@ -108,8 +112,11 @@ fn node_fs_ops() {
     std::fs::create_dir_all(&mount_dir).unwrap();
 
     let mounts = vec![Mount::rw(&mount_dir, "/mnt/host")];
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 512, mounts, None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(512)
+        .mounts(mounts)
+        .boot()
+        .unwrap();
 
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/node/fs_ops.js");
     run(&mut sandbox, Exec::File(script)).unwrap();
@@ -125,16 +132,11 @@ fn node_fs_ops() {
 #[test]
 fn node_http_get() {
     let rootfs = require_rootfs("node");
-    let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs),
-        &None,
-        512,
-        Vec::new(),
-        Some(NetworkPolicy::AllowAll),
-        None,
-    )
-    .unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(512)
+        .network(NetworkPolicy::AllowAll)
+        .boot()
+        .unwrap();
 
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/node/http_get.js");
     run(&mut sandbox, Exec::File(script)).unwrap();
@@ -148,15 +150,16 @@ fn node_http_get() {
 #[test]
 fn node_env_vars() {
     let rootfs = require_rootfs("node");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 512, Vec::new(), None, None).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(512)
+        .boot()
+        .unwrap();
     cfg.set_env_vars(&[
         ("MY_VAR", "hello_world"),
         ("DEBUG", "1"),
         ("GREETING", "hi there"),
     ])
     .unwrap();
-    let mut sandbox = init(usandbox).unwrap();
     run(
         &mut sandbox,
         Exec::File(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/node/env_vars.js")),

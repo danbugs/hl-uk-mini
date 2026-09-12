@@ -14,9 +14,7 @@ mod common;
 use std::sync::Arc;
 
 use common::{BIN_MOUNT, require_bins, require_rootfs, snapshot_dir};
-use hyperlight_unikraft::{
-    Mount, OciTag, SNAPSHOT_TAG, Snapshot, create_sandbox, init, restore, run,
-};
+use hyperlight_unikraft::{Mount, OciTag, SNAPSHOT_TAG, SandboxBuilder, Snapshot, run};
 
 /// Environment handed to the `env_vars` examples.
 const ENV: &[(&str, &str)] = &[
@@ -30,12 +28,14 @@ const ENV: &[(&str, &str)] = &[
 fn run_bins(runtime: &str, scratch_mb: usize, env: &[(&str, &str)], paths: &[&str]) -> String {
     let rootfs = require_rootfs(runtime);
     let mounts = vec![Mount::rw(require_bins(runtime), BIN_MOUNT)];
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, scratch_mb, mounts, None, None).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(scratch_mb)
+        .mounts(mounts)
+        .boot()
+        .unwrap();
     if !env.is_empty() {
         cfg.set_env_vars(env).unwrap();
     }
-    let mut sandbox = init(usandbox).unwrap();
     for path in paths {
         run(&mut sandbox, *path).unwrap();
     }
@@ -50,9 +50,11 @@ fn run_bin_from_snapshot(runtime: &str, scratch_mb: usize, path: &str) -> String
     let empty_mount = snapshot_dir(&format!("{runtime}-snap-mount"));
 
     let mounts_save = vec![Mount::rw(&empty_mount, BIN_MOUNT)];
-    let (usandbox, _cfg) =
-        create_sandbox(&Some(rootfs), &None, scratch_mb, mounts_save, None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, _cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(scratch_mb)
+        .mounts(mounts_save)
+        .boot()
+        .unwrap();
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
@@ -60,7 +62,10 @@ fn run_bin_from_snapshot(runtime: &str, scratch_mb: usize, path: &str) -> String
     let mounts_run = vec![Mount::rw(require_bins(runtime), BIN_MOUNT)];
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
-    let (mut sandbox, cfg2) = restore(snap, mounts_run, None, None).unwrap();
+    let (mut sandbox, cfg2) = SandboxBuilder::from_snapshot(snap)
+        .mounts(mounts_run)
+        .boot()
+        .unwrap();
     run(&mut sandbox, path).unwrap();
     let output = cfg2.drain_output();
 
@@ -220,8 +225,11 @@ fn dotnet_aot_capabilities() {
         Mount::rw(require_bins("dotnet-aot"), BIN_MOUNT),
         Mount::rw(&out_dir, "/mnt/out"),
     ];
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 256, mounts, None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(256)
+        .mounts(mounts)
+        .boot()
+        .unwrap();
     run(&mut sandbox, "/mnt/bin/Caps").unwrap();
     let output = cfg.drain_output();
 

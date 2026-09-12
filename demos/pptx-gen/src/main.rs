@@ -9,7 +9,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use hyperlight_unikraft::{create_sandbox, init, run, Exec, Mount};
+use hyperlight_unikraft::{Exec, Mount, SandboxBuilder, run};
 use std::path::PathBuf;
 use tracing::info;
 
@@ -214,16 +214,11 @@ fn execute_in_sandbox(
     if !rootfs.exists() {
         bail!("rootfs not found: {rootfs:?}. Build it with `just rootfs`.");
     }
-    let (usandbox, _cfg) = create_sandbox(
-        &Some(rootfs.clone()),
-        &None,
-        scratch_mb,
-        vec![Mount::rw(out_dir, "/out")],
-        None,
-        None,
-    )
-    .map_err(|e| anyhow!("create_sandbox: {e}"))?;
-    let mut sandbox = init(usandbox).map_err(|e| anyhow!("init: {e}"))?;
+    let (mut sandbox, _cfg) = SandboxBuilder::from_initrd(rootfs.clone())
+        .scratch_mb(scratch_mb)
+        .mount(Mount::rw(out_dir, "/out"))
+        .boot()
+        .map_err(|e| anyhow!("boot sandbox: {e}"))?;
     run(&mut sandbox, Exec::Code(program.to_string())).map_err(|e| anyhow!("guest run: {e}"))?;
     Ok(())
 }

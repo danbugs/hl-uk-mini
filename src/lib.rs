@@ -5,18 +5,11 @@
 //! on Hyperlight.
 //!
 //! ```no_run
-//! use hyperlight_unikraft::{create_sandbox, init, run, Exec, Mount};
+//! use hyperlight_unikraft::{SandboxBuilder, run};
 //!
-//! // Simple sandbox — no mounts, no networking.
-//! let (usandbox, cfg) = create_sandbox(
-//!     &Some("rootfs/python.cpio".into()),
-//!     &None,
-//!     256,
-//!     Vec::new(),
-//!     None,
-//!     None,
-//! )?;
-//! let mut sandbox = init(usandbox)?;
+//! let (mut sandbox, cfg) = SandboxBuilder::from_initrd("rootfs/python.cpio")
+//!     .scratch_mb(256)
+//!     .boot()?;
 //! run(&mut sandbox, "print('hello')")?;
 //! let output = cfg.drain_output();
 //! assert!(output.contains("hello"));
@@ -54,13 +47,13 @@ pub use net_policy::{AllowList, BlockList, ListenPorts, NetworkPolicy};
 // ── Constants ───────────────────────────────────────────────────────────
 
 /// Embedded Unikraft app-elfloader kernel binary.
-pub static KERNEL: &[u8] = include_bytes!("../kernel/elfloader_hyperlight-x86_64");
+static KERNEL: &[u8] = include_bytes!("../kernel/elfloader_hyperlight-x86_64");
 
 /// GPA where the initrd is mapped via `map_file_cow`.
 ///
 /// Past the x86 LAPIC MMIO page (0xFEE0_0000) to avoid collisions
 /// with KVM's in-kernel IRQCHIP reservation.
-pub const INITRD_MAP_BASE: u64 = 0xFEF0_0000;
+const INITRD_MAP_BASE: u64 = 0xFEF0_0000;
 
 /// Default scratch memory budget in MiB.
 ///
@@ -105,7 +98,7 @@ const IO_STACK_SIZE: usize = HOST_CALL_MAX + 4096;
 /// Only needed for the boot stack (allocated before `ukplat_mem_init`).
 /// Can be dropped to 0 once the guest allocates the boot stack from
 /// scratch instead.
-pub const HEAP_SIZE: u64 = 0x10_0000; // 1 MiB
+const HEAP_SIZE: u64 = 0x10_0000; // 1 MiB
 
 /// OCI tag used when saving/loading snapshots to disk.
 pub const SNAPSHOT_TAG: &str = "latest";
@@ -118,8 +111,8 @@ pub const SNAPSHOT_TAG: &str = "latest";
 /// kernel needs the SYSCALL entry set so the elfloader can drop ring-3
 /// ELFs into a `syscall`, plus PAT, which the native paging init resets.
 ///
-/// Both the boot path ([`create_sandbox`]) and the restore path
-/// ([`restore`]) must declare the SAME set: a snapshot persists exactly
+/// Both the boot path and the restore path (both under
+/// [`SandboxBuilder::boot`]) must declare the SAME set: a snapshot persists exactly
 /// the declared MSRs and restore rejects any it cannot map back onto the
 /// restoring VM's declared set.
 const GUEST_MSRS: &[u32] = &[
@@ -210,17 +203,21 @@ impl Mount {
 ///
 /// Built once during sandbox setup, then used to register identical
 /// host functions for both the init and snapshot-restore paths.
+///
+/// The fields are internal — a caller receives a `GuestConfig` from
+/// [`SandboxBuilder::boot`] and interacts with it through the
+/// methods ([`set_env_vars`](Self::set_env_vars), [`drain_output`](Self::drain_output)).
 pub struct GuestConfig {
-    pub cmdline: String,
-    pub scratch_size: usize,
-    pub initrd_base: u64,
-    pub initrd_size: u64,
+    cmdline: String,
+    scratch_size: usize,
+    initrd_base: u64,
+    initrd_size: u64,
     /// Host filesystem mounts.
-    pub mounts: Vec<Mount>,
+    mounts: Vec<Mount>,
     /// Network access policy (`None` = networking disabled).
-    pub network: Option<NetworkPolicy>,
+    network: Option<NetworkPolicy>,
     /// Ports the guest is allowed to `bind()` for inbound connections.
-    pub listen_ports: Option<ListenPorts>,
+    listen_ports: Option<ListenPorts>,
     /// Captured guest stdout — accumulated by the HostPrint callback.
     output: Arc<Mutex<String>>,
     /// NUL-separated KEY=VALUE pairs for guest env vars.
@@ -229,12 +226,12 @@ pub struct GuestConfig {
 
 impl GuestConfig {
     /// How much scratch memory to give the paging frame allocator (75%).
-    pub fn paging_budget(&self) -> u64 {
+    fn paging_budget(&self) -> u64 {
         (self.scratch_size as u64) * 3 / 4
     }
 
     /// Top of the exception stack in guest virtual address space.
-    pub fn exn_stack_top(&self) -> u64 {
+    fn exn_stack_top(&self) -> u64 {
         hyperlight_common::layout::SCRATCH_TOP_GVA as u64
             - hyperlight_common::layout::SCRATCH_TOP_EXN_STACK_OFFSET
             + 1
@@ -242,14 +239,11 @@ impl GuestConfig {
 
     /// Set environment variables to pass to the guest.
     ///
-    /// Call before [`init`] — the guest's boot sequence queries the
-    /// `GetEnvVars` host function and injects these into its process
-    /// environment via `putenv()`.
-    ///
-    /// Can also be called between dispatches (without restore) to
-    /// update the guest's environment.  Each dispatch calls
-    /// `hl_env_refresh()` which re-queries the host and calls
-    /// `setenv()` for every returned variable.
+    /// For env that should be present from the guest's first dispatch,
+    /// prefer [`SandboxBuilder::env`], which applies these before the guest
+    /// boots.  This setter updates the environment for subsequent `run()`
+    /// dispatches: each dispatch calls `hl_env_refresh()`, which re-queries
+    /// the host and calls `setenv()` for every returned variable.
     ///
     /// **Caveat — full replace, not merge**: This replaces the entire
     /// env var set, not merging with the previous one.  Variables
@@ -259,10 +253,11 @@ impl GuestConfig {
     /// linger in the guest until it is restored from a snapshot.
     ///
     /// ```no_run
-    /// # use hyperlight_unikraft::create_sandbox;
-    /// let (usandbox, cfg) = create_sandbox(&None, &None, 256, Vec::new(), None, None).unwrap();
+    /// # use hyperlight_unikraft::SandboxBuilder;
+    /// let (mut sandbox, cfg) = SandboxBuilder::from_initrd("rootfs/python.cpio").boot().unwrap();
     /// cfg.set_env_vars(&[("MY_VAR", "hello"), ("DEBUG", "1")]).unwrap();
-    /// // now call init(usandbox)…
+    /// // the next run(&mut sandbox, …) observes them
+    /// # let _ = &mut sandbox;
     /// ```
     pub fn set_env_vars(&self, vars: &[(&str, &str)]) -> hyperlight_host::Result<()> {
         let mut s = String::new();
@@ -412,8 +407,8 @@ impl GuestConfig {
 /// (e.g. `hl_pydriver`, `hl_nodedriver`) — and returns the first match
 /// as a guest-absolute path.
 ///
-/// Used internally by [`create_sandbox`] to auto-detect the entry point
-/// so callers don't need to pass `--entry` manually.
+/// Used internally by [`SandboxBuilder::boot`] to auto-detect the entry
+/// point so callers don't need to set one manually.
 fn find_cpio_entry(path: &Path) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let mut header = [0u8; 110];
@@ -475,41 +470,11 @@ fn resolve_entry(entry: &Option<String>, initrd: &Option<PathBuf>) -> Option<Str
 
 // ── Public API ─────────────────────────────────────────────────────────
 
-/// Create an uninitialized sandbox with host functions registered.
-///
-/// Uses the embedded kernel binary ([`KERNEL`]).  Returns the sandbox
-/// ready for [`init`] and the [`GuestConfig`] used to register the
-/// host functions.
-pub fn create_sandbox(
-    initrd: &Option<PathBuf>,
-    entry: &Option<String>,
-    scratch_mb: usize,
-    mounts: Vec<Mount>,
-    network: Option<NetworkPolicy>,
-    listen_ports: Option<ListenPorts>,
-) -> hyperlight_host::Result<(UninitializedSandbox, GuestConfig)> {
-    create_sandbox_with_kernel(
-        &None,
-        initrd,
-        entry,
-        scratch_mb,
-        mounts,
-        network,
-        listen_ports,
-    )
-}
-
-/// Like [`create_sandbox`], but boots a kernel from `kernel` instead of the
-/// embedded [`KERNEL`] when `Some`.
-///
-/// **Advanced / unsupported.** The embedded kernel is the only combination
-/// this crate is tested against; an external kernel must match the ABI the
-/// host expects (PEB layout, load/base address, and the host-function set the
-/// drivers rely on) or the guest will fault at boot.  Intended for kernel
-/// development — swap in a locally built `elfloader_hyperlight-x86_64` without
-/// rebuilding the host.  `None` uses the embedded kernel (identical to
-/// [`create_sandbox`]).
-pub fn create_sandbox_with_kernel(
+/// Assemble the uninitialized sandbox and its [`GuestConfig`] from the
+/// pieces a [`SandboxBuilder`] gathered.  `kernel` is `None` for the
+/// embedded [`KERNEL`], `Some` for an external one; `initrd` is `None`
+/// for a self-contained kernel that carries its own workload.
+fn assemble_sandbox(
     kernel: &Option<PathBuf>,
     initrd: &Option<PathBuf>,
     entry: &Option<String>,
@@ -615,10 +580,202 @@ pub fn create_sandbox_with_kernel(
     Ok((usandbox, config))
 }
 
-/// Initialize (evolve) a sandbox — boots the guest and returns a
-/// ready-to-use multi-use sandbox.
-pub fn init(usandbox: UninitializedSandbox) -> hyperlight_host::Result<MultiUseSandbox> {
-    usandbox.evolve()
+/// Builds and boots a sandbox.
+///
+/// Pick a source — [`from_initrd`](Self::from_initrd) (a CPIO rootfs on the
+/// embedded kernel, the usual case), [`from_kernel`](Self::from_kernel) (a
+/// self-contained external kernel), or [`from_snapshot`](Self::from_snapshot)
+/// (resume a saved guest) — chain the settings you need, then
+/// [`boot`](Self::boot).  Everything but the source has a default, so
+/// `SandboxBuilder::from_initrd(path).boot()` is a complete call.
+///
+/// [`boot`](Self::boot) brings the guest to a running state (evolving a fresh
+/// guest, or restoring a snapshot) and hands back the ready
+/// [`MultiUseSandbox`] plus its [`GuestConfig`].
+///
+/// ```no_run
+/// use hyperlight_unikraft::{SandboxBuilder, Mount, NetworkPolicy, run};
+///
+/// let (mut sandbox, cfg) = SandboxBuilder::from_initrd("rootfs/python.cpio")
+///     .scratch_mb(256)
+///     .mount(Mount::ro("/data", "/mnt/data"))
+///     .network(NetworkPolicy::AllowAll)
+///     .env("GREETING", "hi")
+///     .boot()?;
+/// run(&mut sandbox, "import os; print(os.environ['GREETING'])")?;
+/// # let _ = cfg;
+/// # Ok::<(), hyperlight_unikraft::hyperlight_host::HyperlightError>(())
+/// ```
+pub struct SandboxBuilder {
+    kernel: Option<PathBuf>,
+    initrd: Option<PathBuf>,
+    entry: Option<String>,
+    scratch_mb: Option<usize>,
+    /// When set, [`boot`](Self::boot) restores this snapshot instead of
+    /// booting a fresh guest; `kernel`/`initrd`/`entry`/`scratch_mb` are
+    /// then ignored (the snapshot carries them).
+    snapshot: Option<Arc<Snapshot>>,
+    mounts: Vec<Mount>,
+    network: Option<NetworkPolicy>,
+    listen_ports: Option<ListenPorts>,
+    env_vars: Vec<(String, String)>,
+}
+
+impl SandboxBuilder {
+    /// A builder with no source and every setting at its default.
+    fn empty() -> Self {
+        Self {
+            kernel: None,
+            initrd: None,
+            entry: None,
+            scratch_mb: None,
+            snapshot: None,
+            mounts: Vec::new(),
+            network: None,
+            listen_ports: None,
+            env_vars: Vec::new(),
+        }
+    }
+
+    /// Boot the embedded kernel with `path` — a CPIO archive — as the guest
+    /// rootfs.  The usual entry point: the workload lives in the rootfs.
+    pub fn from_initrd(path: impl Into<PathBuf>) -> Self {
+        Self {
+            initrd: Some(path.into()),
+            ..Self::empty()
+        }
+    }
+
+    /// Boot an external kernel that carries its own workload — a native
+    /// app-in-kernel build, or a locally built `elfloader_hyperlight-x86_64`
+    /// for kernel development.
+    ///
+    /// **Advanced.** The embedded kernel is the only combination this crate is
+    /// tested against; an external kernel must match the ABI the host expects
+    /// (PEB layout, load/base address, and the host-function set the drivers
+    /// rely on) or the guest faults at boot.  Add an [`initrd`](Self::initrd)
+    /// if the external kernel also wants a rootfs.
+    pub fn from_kernel(path: impl Into<PathBuf>) -> Self {
+        Self {
+            kernel: Some(path.into()),
+            ..Self::empty()
+        }
+    }
+
+    /// Resume a guest from a saved snapshot instead of booting a fresh one.
+    /// The snapshot carries the guest's cmdline/initrd/layout, so the
+    /// kernel/initrd/entry/scratch settings do not apply here.
+    ///
+    /// **Mounts must match.** The guest kernel's fstab entries are baked into
+    /// the snapshot; re-supply the same [`mount`](Self::mount)s the snapshot
+    /// was saved with so the host side serves them.  Missing or different
+    /// mounts cause guest I/O errors.
+    pub fn from_snapshot(snapshot: Arc<Snapshot>) -> Self {
+        Self {
+            snapshot: Some(snapshot),
+            ..Self::empty()
+        }
+    }
+
+    /// CPIO rootfs to map for the guest (see [`from_initrd`](Self::from_initrd)).
+    pub fn initrd(mut self, path: impl Into<PathBuf>) -> Self {
+        self.initrd = Some(path.into());
+        self
+    }
+
+    /// Swap in an external kernel (see [`from_kernel`](Self::from_kernel) for
+    /// the ABI caveats).
+    pub fn kernel(mut self, path: impl Into<PathBuf>) -> Self {
+        self.kernel = Some(path.into());
+        self
+    }
+
+    /// Override the auto-detected guest entry point.
+    pub fn entry(mut self, entry: impl Into<String>) -> Self {
+        self.entry = Some(entry.into());
+        self
+    }
+
+    /// Scratch memory in MiB (default [`DEFAULT_SCRATCH_MB`]).
+    pub fn scratch_mb(mut self, mb: usize) -> Self {
+        self.scratch_mb = Some(mb);
+        self
+    }
+
+    /// Add one host-directory mount.
+    pub fn mount(mut self, mount: Mount) -> Self {
+        self.mounts.push(mount);
+        self
+    }
+
+    /// Add several host-directory mounts.
+    pub fn mounts(mut self, mounts: impl IntoIterator<Item = Mount>) -> Self {
+        self.mounts.extend(mounts);
+        self
+    }
+
+    /// Enable host networking under the given policy.
+    pub fn network(mut self, policy: NetworkPolicy) -> Self {
+        self.network = Some(policy);
+        self
+    }
+
+    /// Ports the guest may bind for inbound connections (requires a network policy).
+    pub fn listen_ports(mut self, ports: ListenPorts) -> Self {
+        self.listen_ports = Some(ports);
+        self
+    }
+
+    /// Set a guest environment variable (repeatable).
+    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env_vars.push((key.into(), value.into()));
+        self
+    }
+
+    /// Register the host functions, bring the guest to a running state, and
+    /// return the ready [`MultiUseSandbox`] plus its [`GuestConfig`].
+    ///
+    /// A fresh guest ([`from_initrd`](Self::from_initrd) /
+    /// [`from_kernel`](Self::from_kernel)) is evolved (booted); a
+    /// [`from_snapshot`](Self::from_snapshot) source is restored.
+    pub fn boot(self) -> hyperlight_host::Result<(MultiUseSandbox, GuestConfig)> {
+        let Self {
+            kernel,
+            initrd,
+            entry,
+            scratch_mb,
+            snapshot,
+            mounts,
+            network,
+            listen_ports,
+            env_vars,
+        } = self;
+
+        let (sandbox, cfg) = match snapshot {
+            Some(snapshot) => restore_snapshot(snapshot, mounts, network, listen_ports)?,
+            None => {
+                let (usandbox, cfg) = assemble_sandbox(
+                    &kernel,
+                    &initrd,
+                    &entry,
+                    scratch_mb.unwrap_or(DEFAULT_SCRATCH_MB),
+                    mounts,
+                    network,
+                    listen_ports,
+                )?;
+                (usandbox.evolve()?, cfg)
+            }
+        };
+
+        if !env_vars.is_empty() {
+            let refs: Vec<(&str, &str)> = env_vars
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            cfg.set_env_vars(&refs)?;
+        }
+        Ok((sandbox, cfg))
+    }
 }
 
 /// What to execute in the guest.
@@ -660,7 +817,7 @@ impl From<String> for Exec {
 /// (`"print('hi')"`) or a file path (`Exec::File("hello.py".into())`).
 ///
 /// Guest stdout is captured in the [`GuestConfig`] returned by
-/// [`create_sandbox`].  Call [`GuestConfig::drain_output`] after
+/// [`SandboxBuilder::boot`].  Call [`GuestConfig::drain_output`] after
 /// `run()` to retrieve what the guest printed.
 pub fn run(sandbox: &mut MultiUseSandbox, exec: impl Into<Exec>) -> hyperlight_host::Result<()> {
     match exec.into() {
@@ -681,24 +838,19 @@ pub fn run(sandbox: &mut MultiUseSandbox, exec: impl Into<Exec>) -> hyperlight_h
     }
 }
 
-/// Restore a sandbox from a saved snapshot.
+/// Restore a sandbox from a saved snapshot — the [`SandboxBuilder::from_snapshot`]
+/// path.
 ///
-/// Convenience wrapper: creates a default [`GuestConfig`] (snapshot
-/// already has the guest's cmdline/initrd), registers host functions,
-/// and builds a [`MultiUseSandbox`] from the snapshot.
-///
-/// **Note:** If the snapshot was created with filesystem mounts, the
-/// same mounts must be passed here.  The guest kernel's fstab entries
-/// are baked into the snapshot; the `mounts` parameter re-registers
-/// the host-side functions that serve those mounts.  Passing different
-/// or empty mounts when the snapshot expects them will cause guest I/O
-/// errors.
+/// Creates a default [`GuestConfig`] (the snapshot already has the guest's
+/// cmdline/initrd), registers host functions, and rebuilds a
+/// [`MultiUseSandbox`] from the snapshot.  The caller must re-supply the same
+/// mounts the snapshot was saved with (see [`SandboxBuilder::from_snapshot`]).
 ///
 /// TODO: Add a `GetMountConfig` host function so the kernel can query
 /// mount configuration at restore time and reconcile its VFS mount
 /// table — unmounting stale entries and mounting new ones — instead of
 /// requiring the caller to pass identical mounts.
-pub fn restore(
+fn restore_snapshot(
     snapshot: Arc<Snapshot>,
     mounts: Vec<Mount>,
     network: Option<NetworkPolicy>,

@@ -10,7 +10,7 @@ use tracing_subscriber::EnvFilter;
 
 use hyperlight_unikraft::{
     AllowList, BlockList, DEFAULT_SCRATCH_MB, Exec, ListenPorts, Mount, NetworkPolicy, OciTag,
-    SNAPSHOT_TAG, Snapshot, create_sandbox, create_sandbox_with_kernel, init, restore, run,
+    SNAPSHOT_TAG, SandboxBuilder, Snapshot, run,
 };
 
 /// Minimal Hyperlight host for Unikraft unikernels.
@@ -394,6 +394,25 @@ fn resolve_exec(
 
 // ── Commands ─────────────────────────────────────────────────────
 
+/// Start a [`SandboxBuilder`] from the CLI's `--kernel` / `--initrd`.  A run
+/// needs a workload — an external kernel, a rootfs, or both — so neither is an
+/// error rather than a sandbox with nothing to boot.
+fn base_builder(
+    kernel: Option<PathBuf>,
+    initrd: Option<PathBuf>,
+) -> hyperlight_unikraft::hyperlight_host::Result<SandboxBuilder> {
+    match (kernel, initrd) {
+        (Some(kernel), Some(initrd)) => Ok(SandboxBuilder::from_kernel(kernel).initrd(initrd)),
+        (Some(kernel), None) => Ok(SandboxBuilder::from_kernel(kernel)),
+        (None, Some(initrd)) => Ok(SandboxBuilder::from_initrd(initrd)),
+        (None, None) => Err(
+            hyperlight_unikraft::hyperlight_host::HyperlightError::Error(
+                "no workload: pass --initrd <rootfs.cpio> or --kernel <kernel>".to_string(),
+            ),
+        ),
+    }
+}
+
 fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
     let mounts = parse_mounts(&args.mounts);
     let (policy, listen) =
@@ -407,23 +426,24 @@ fn cmd_run(args: RunArgs) -> hyperlight_unikraft::hyperlight_host::Result<()> {
         .unwrap_or_else(|| Exec::Guest(args.guest_exec.unwrap_or_default()));
     let envs = parse_envs(&args.envs);
 
-    let (usandbox, config) = create_sandbox_with_kernel(
-        &args.kernel,
-        &args.initrd,
-        &args.entry,
-        args.scratch_mb,
-        mounts,
-        policy,
-        listen,
-    )?;
-
-    if !envs.is_empty() {
-        config.set_env_vars(&envs)?;
+    let mut builder = base_builder(args.kernel, args.initrd)?
+        .scratch_mb(args.scratch_mb)
+        .mounts(mounts);
+    if let Some(entry) = args.entry {
+        builder = builder.entry(entry);
     }
-
+    if let Some(policy) = policy {
+        builder = builder.network(policy);
+    }
+    if let Some(listen) = listen {
+        builder = builder.listen_ports(listen);
+    }
+    for (key, value) in envs {
+        builder = builder.env(key, value);
+    }
     let t = Instant::now();
-    let mut sandbox = init(usandbox)?;
-    info!(elapsed_ms = t.elapsed().as_secs_f64() * 1000.0, "init");
+    let (mut sandbox, _config) = builder.boot()?;
+    info!(elapsed_ms = t.elapsed().as_secs_f64() * 1000.0, "boot");
 
     let t = Instant::now();
     run(&mut sandbox, exec)?;
@@ -437,16 +457,19 @@ fn cmd_snapshot_save(args: SaveArgs) -> hyperlight_unikraft::hyperlight_host::Re
     let (policy, listen) =
         parse_net_policy(args.net, &args.net_allow, &args.net_block, &args.ports)
             .map_err(hyperlight_unikraft::hyperlight_host::HyperlightError::Error)?;
-    let (usandbox, _config) = create_sandbox_with_kernel(
-        &args.kernel,
-        &args.initrd,
-        &args.entry,
-        args.scratch_mb,
-        mounts,
-        policy,
-        listen,
-    )?;
-    let mut sandbox = init(usandbox)?;
+    let mut builder = base_builder(args.kernel, args.initrd)?
+        .scratch_mb(args.scratch_mb)
+        .mounts(mounts);
+    if let Some(entry) = args.entry {
+        builder = builder.entry(entry);
+    }
+    if let Some(policy) = policy {
+        builder = builder.network(policy);
+    }
+    if let Some(listen) = listen {
+        builder = builder.listen_ports(listen);
+    }
+    let (mut sandbox, _config) = builder.boot()?;
 
     let t = Instant::now();
     let snap = sandbox.snapshot()?;
@@ -493,16 +516,23 @@ fn cmd_snapshot_run(args: SnapshotRunArgs) -> hyperlight_unikraft::hyperlight_ho
 
     let envs = parse_envs(&args.envs);
 
+    let mut builder = SandboxBuilder::from_snapshot(snap).mounts(mounts);
+    if let Some(policy) = policy {
+        builder = builder.network(policy);
+    }
+    if let Some(listen) = listen {
+        builder = builder.listen_ports(listen);
+    }
+    for (key, value) in envs {
+        builder = builder.env(key, value);
+    }
+
     let t = Instant::now();
-    let (mut sandbox, config) = restore(snap, mounts, policy, listen)?;
+    let (mut sandbox, _config) = builder.boot()?;
     info!(
         elapsed_ms = t.elapsed().as_secs_f64() * 1000.0,
         "restored from snapshot",
     );
-
-    if !envs.is_empty() {
-        config.set_env_vars(&envs)?;
-    }
 
     // Precedence: host script / --exec code; else --guest-exec; else the
     // rootfs's conventional entrypoint.
@@ -624,15 +654,9 @@ fn bench_cold(args: BenchColdArgs) -> hyperlight_unikraft::hyperlight_host::Resu
 
     for i in 0..args.samples {
         let t0 = Instant::now();
-        let (usandbox, _) = create_sandbox(
-            &Some(args.initrd.clone()),
-            &None,
-            args.scratch_mb,
-            Vec::new(),
-            None,
-            None,
-        )?;
-        let mut sandbox = init(usandbox)?;
+        let (mut sandbox, _) = SandboxBuilder::from_initrd(args.initrd.clone())
+            .scratch_mb(args.scratch_mb)
+            .boot()?;
         let boot_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
         let t1 = Instant::now();
@@ -670,7 +694,7 @@ fn bench_cold_snap(args: BenchSnapArgs) -> hyperlight_unikraft::hyperlight_host:
         let load_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
         let t1 = Instant::now();
-        let (mut sandbox, _config) = restore(snap, Vec::new(), None, None)?;
+        let (mut sandbox, _config) = SandboxBuilder::from_snapshot(snap).boot()?;
         let restore_ms = t1.elapsed().as_secs_f64() * 1000.0;
 
         let t2 = Instant::now();
@@ -704,7 +728,7 @@ fn bench_warm_restore(args: BenchSnapArgs) -> hyperlight_unikraft::hyperlight_ho
 
     let t0 = Instant::now();
     let snap = Arc::new(Snapshot::load(&args.snapshot, tag)?);
-    let (mut sandbox, _config) = restore(snap.clone(), Vec::new(), None, None)?;
+    let (mut sandbox, _config) = SandboxBuilder::from_snapshot(snap.clone()).boot()?;
     let setup_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!("BENCH warm-restore setup_ms={setup_ms:.3}");
 
@@ -739,7 +763,7 @@ fn bench_warm_stateful(args: BenchSnapArgs) -> hyperlight_unikraft::hyperlight_h
 
     let t0 = Instant::now();
     let snap = Arc::new(Snapshot::load(&args.snapshot, tag)?);
-    let (mut sandbox, _config) = restore(snap, Vec::new(), None, None)?;
+    let (mut sandbox, _config) = SandboxBuilder::from_snapshot(snap).boot()?;
     let setup_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!("BENCH warm-stateful setup_ms={setup_ms:.3}");
 
@@ -781,8 +805,9 @@ fn bench_parallel(args: BenchParallelArgs) -> hyperlight_unikraft::hyperlight_ho
                 barrier.wait();
                 let vm_start = Instant::now();
 
-                let (mut sandbox, _config) =
-                    restore(snap.clone(), Vec::new(), None, None).map_err(|e| e.to_string())?;
+                let (mut sandbox, _config) = SandboxBuilder::from_snapshot(snap.clone())
+                    .boot()
+                    .map_err(|e| e.to_string())?;
                 let mut execs = Vec::with_capacity(iterations);
 
                 for iter in 0..iterations {

@@ -2,8 +2,8 @@
 // Copyright 2026 The Hyperlight Authors.
 
 //! Boots a *native* Unikraft image (a C `main()` compiled directly into the
-//! kernel — no ELF loader, no initrd) through the `--kernel` / library
-//! [`create_sandbox_with_kernel`] override.  This proves the host can run a
+//! kernel — no ELF loader, no initrd) through the `--kernel` flag / the
+//! library's [`SandboxBuilder::from_kernel`].  This proves the host can run a
 //! kernel other than the embedded elfloader.
 //!
 //! The fixture kernel is built reproducibly with `just build-native-kernel`
@@ -27,7 +27,7 @@
 
 use std::path::PathBuf;
 
-use hyperlight_unikraft::{create_sandbox_with_kernel, init};
+use hyperlight_unikraft::SandboxBuilder;
 
 fn require_native_kernel() -> PathBuf {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -45,12 +45,11 @@ fn native_kernel_boots_and_prints() {
     let kernel = require_native_kernel();
 
     // A bare native kernel: no initrd, no mounts, no networking.
-    let (usandbox, cfg) =
-        create_sandbox_with_kernel(&Some(kernel), &None, &None, 64, Vec::new(), None, None)
-            .unwrap();
-
-    // evolve runs the guest's main() to its halt; capture what it printed.
-    let _sandbox = init(usandbox).unwrap();
+    // boot() runs the guest's main() to its halt; capture what it printed.
+    let (_sandbox, cfg) = SandboxBuilder::from_kernel(kernel)
+        .scratch_mb(64)
+        .boot()
+        .unwrap();
     let output = cfg.drain_output();
 
     assert!(

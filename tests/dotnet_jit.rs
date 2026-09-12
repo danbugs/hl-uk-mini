@@ -7,15 +7,16 @@ use std::sync::Arc;
 
 use common::{hluk_with_stdin_scratch, require_rootfs, snapshot_dir};
 use hyperlight_unikraft::{
-    Exec, Mount, NetworkPolicy, OciTag, SNAPSHOT_TAG, Snapshot, create_sandbox, init, restore, run,
+    Exec, Mount, NetworkPolicy, OciTag, SNAPSHOT_TAG, SandboxBuilder, Snapshot, run,
 };
 
 #[test]
 fn dotnet_jit_inline_code() {
     let rootfs = require_rootfs("dotnet-jit");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 768, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(768)
+        .boot()
+        .unwrap();
     run(&mut sandbox, "Console.WriteLine(\"hluk-dotnet-ok\");").unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -28,9 +29,10 @@ fn dotnet_jit_inline_code() {
 fn dotnet_jit_exec_file() {
     let rootfs = require_rootfs("dotnet-jit");
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/dotnet-jit/Hello.cs");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 768, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(768)
+        .boot()
+        .unwrap();
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -44,16 +46,17 @@ fn dotnet_jit_snapshot_round_trip() {
     let rootfs = require_rootfs("dotnet-jit");
     let snap_dir = snapshot_dir("dotnet-jit-snap");
 
-    let (usandbox, _cfg) =
-        create_sandbox(&Some(rootfs), &None, 768, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, _cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(768)
+        .boot()
+        .unwrap();
     let snap = sandbox.snapshot().unwrap();
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     snap.save(&snap_dir, &tag).unwrap();
 
     let tag: OciTag = SNAPSHOT_TAG.parse().unwrap();
     let snap = Arc::new(Snapshot::load(&snap_dir, tag).unwrap());
-    let (mut sandbox, cfg2) = restore(snap, Vec::new(), None, None).unwrap();
+    let (mut sandbox, cfg2) = SandboxBuilder::from_snapshot(snap).boot().unwrap();
     run(&mut sandbox, "Console.WriteLine(\"restored-dotnet-ok\");").unwrap();
     let output = cfg2.drain_output();
     assert!(
@@ -67,9 +70,10 @@ fn dotnet_jit_snapshot_round_trip() {
 #[test]
 fn dotnet_jit_multiple_runs() {
     let rootfs = require_rootfs("dotnet-jit");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 768, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(768)
+        .boot()
+        .unwrap();
 
     run(&mut sandbox, "Console.WriteLine(\"run1-ok\");").unwrap();
     let output1 = cfg.drain_output();
@@ -90,9 +94,10 @@ fn dotnet_jit_multiple_runs() {
 fn dotnet_jit_math() {
     let rootfs = require_rootfs("dotnet-jit");
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/dotnet-jit/Math.cs");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 768, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(768)
+        .boot()
+        .unwrap();
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
     assert!(
@@ -127,15 +132,16 @@ fn dotnet_jit_stdin_piped() {
 #[test]
 fn dotnet_jit_env_vars() {
     let rootfs = require_rootfs("dotnet-jit");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 768, Vec::new(), None, None).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(768)
+        .boot()
+        .unwrap();
     cfg.set_env_vars(&[
         ("MY_VAR", "hello_world"),
         ("DEBUG", "1"),
         ("GREETING", "hi there"),
     ])
     .unwrap();
-    let mut sandbox = init(usandbox).unwrap();
     run(
         &mut sandbox,
         Exec::File(
@@ -165,8 +171,11 @@ fn dotnet_jit_fs() {
     std::fs::create_dir_all(&mount_dir).unwrap();
 
     let mounts = vec![Mount::rw(&mount_dir, "/mnt/host")];
-    let (usandbox, cfg) = create_sandbox(&Some(rootfs), &None, 768, mounts, None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(768)
+        .mounts(mounts)
+        .boot()
+        .unwrap();
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/dotnet-jit/FsOps.cs");
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
@@ -188,9 +197,10 @@ fn dotnet_jit_fs() {
 #[test]
 fn dotnet_jit_threading() {
     let rootfs = require_rootfs("dotnet-jit");
-    let (usandbox, cfg) =
-        create_sandbox(&Some(rootfs), &None, 768, Vec::new(), None, None).unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(768)
+        .boot()
+        .unwrap();
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/dotnet-jit/Threads.cs");
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();
@@ -208,16 +218,11 @@ fn dotnet_jit_threading() {
 #[test]
 fn dotnet_jit_http_get() {
     let rootfs = require_rootfs("dotnet-jit");
-    let (usandbox, cfg) = create_sandbox(
-        &Some(rootfs),
-        &None,
-        768,
-        Vec::new(),
-        Some(NetworkPolicy::AllowAll),
-        None,
-    )
-    .unwrap();
-    let mut sandbox = init(usandbox).unwrap();
+    let (mut sandbox, cfg) = SandboxBuilder::from_initrd(rootfs)
+        .scratch_mb(768)
+        .network(NetworkPolicy::AllowAll)
+        .boot()
+        .unwrap();
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/dotnet-jit/HttpGet.cs");
     run(&mut sandbox, Exec::File(script)).unwrap();
     let output = cfg.drain_output();

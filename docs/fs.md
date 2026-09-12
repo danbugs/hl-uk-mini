@@ -37,16 +37,13 @@ hluk run --initrd rootfs.cpio \
 From the Rust API (parameter order: host path, guest path):
 
 ```rust
-use hyperlight_unikraft::{Mount, create_sandbox, init, run};
+use hyperlight_unikraft::{Mount, SandboxBuilder, run};
 
-let mounts = vec![
-    Mount::rw("/tmp/share", "/mnt/host"),
-    Mount::ro("/data", "/mnt/data"),
-];
-let (usandbox, _) = create_sandbox(
-    &Some("rootfs.cpio".into()), &None, 256, mounts, None, None,
-)?;
-let mut sandbox = init(usandbox)?;
+let (mut sandbox, _) = SandboxBuilder::from_initrd("rootfs.cpio")
+    .scratch_mb(256)
+    .mount(Mount::rw("/tmp/share", "/mnt/host"))
+    .mount(Mount::ro("/data", "/mnt/data"))
+    .boot()?;
 run(&mut sandbox, "open('/mnt/host/out.txt', 'w').write('hello')")?;
 ```
 

@@ -29,7 +29,7 @@ Produces a compact summary table at the end, plus a machine-readable `bench-resu
 
 ## CI gate
 
-CI runs every mode on Linux and Windows and charts the results per host OS at <https://danbugs.github.io/hl-uk-mini/> (`dev/bench/<os>/<runtime>`), with a current-versus-main table in each job's summary. Ratios against the previous run only warn: the hosted runners vary by 10-30% (Linux) to 2x (Windows) between runs of the same commit. The gate is `limits.json`: a ceiling per runtime, host OS and metric (`ms`, or `MiB` for `snapshot-size`), using the metric names from `bench-results.json`. A job fails when a named metric is over its ceiling; metrics not named are charted but not gated. The initial ceilings are about 2x (Linux) and 3x (Windows) the values seen on the hosted runners.
+CI runs every mode on Linux and Windows and charts the results per host OS at <https://hyperlight-dev.github.io/hyperlight-unikraft> (`dev/bench/<os>/<runtime>`), with a current-versus-main table in each job's summary. Ratios against the previous run only warn: the hosted runners vary by 10-30% (Linux) to 2x (Windows) between runs of the same commit. The gate is `limits.json`: a ceiling per runtime, host OS and metric (`ms`, or `MiB` for `snapshot-size`), using the metric names from `bench-results.json`. A job fails when a named metric is over its ceiling; metrics not named are charted but not gated. The initial ceilings are about 2x (Linux) and 3x (Windows) the values seen on the hosted runners.
 
 ## Notes
 
@@ -39,8 +39,7 @@ CI runs every mode on Linux and Windows and charts the results per host OS at <h
 
 ## TODO
 
-- [ ] Integrate [pyperformance](https://pyperformance.readthedocs.io/) for
-      standardized Python benchmarks alongside custom workloads.
+- [ ] Integrate [pyperformance](https://pyperformance.readthedocs.io/) for standardized Python benchmarks alongside custom workloads.
 - [ ] Bench other runtimes.
 
 [github-action-benchmark]: https://github.com/benchmark-action/github-action-benchmark
